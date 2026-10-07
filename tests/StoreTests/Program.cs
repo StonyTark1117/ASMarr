@@ -69,5 +69,12 @@ store.Execute("UPDATE commands SET state='failed' WHERE name='video-backfill';UP
 Assert(store.EnqueueResumableVideoBackfills(TimeSpan.FromMinutes(5))==1,"transient video history failures retry after the bounded delay");
 store.Execute("UPDATE creators SET monitor_video=0 WHERE id=1;UPDATE commands SET state='failed' WHERE name='video-backfill';UPDATE backfill_jobs SET state='interrupted' WHERE id='resume-video'");
 Assert(store.EnqueueResumableVideoBackfills(TimeSpan.Zero)==0,"disabled video monitoring never resumes a cancelled history scan");
+store.Execute("INSERT INTO assets(key,url,targets,source,creator,title,state) VALUES('legacy-audio','fixture:legacy','[]','soundgasm','First','Legacy audio','complete'),('new-audio','fixture:new','[]','soundgasm','First','New audio','complete')");
+store.Execute("UPDATE media_assets SET state='imported' WHERE recording_key='new-audio' AND media_kind='Audio'");
+store.Execute("INSERT INTO media_assets(recording_key,media_kind,state) VALUES('legacy-audio','Video','imported')");
+var totals=CreatorLibrary.Read(store).Single(row=>row["name"]!.ToString()=="First");
+Assert(Convert.ToInt32(totals["audio_completed"])==2,"creator totals include legacy complete and new imported audio");
+Assert(Convert.ToInt32(totals["video_completed"])==1,"video totals remain independent of audio compatibility states");
+Assert(store.Query("SELECT state FROM media_assets WHERE recording_key='legacy-audio' AND media_kind='Audio'")[0]["state"]!.ToString()=="complete","creator totals preserve migrated audio state without rewriting records");
 Console.WriteLine($"{assertions} store integration assertions passed");
 SqliteConnection.ClearAllPools();Directory.Delete(root,true);
