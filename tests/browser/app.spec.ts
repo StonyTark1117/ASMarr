@@ -135,6 +135,16 @@ test("settings source toggle and task execution", async ({ page, request }) => {
     .first();
   await row.getByLabel("Enabled").uncheck();
   await expect(row.getByLabel("Enabled")).not.toBeChecked();
+  await page.getByRole("button", { name: "Configure soundgasm", exact: true }).click();
+  await page.getByLabel("Source configuration", { exact: true }).fill('{"soundgasm_creators":["Quiet_Creator"]}');
+  await page.getByRole("button", {name:"Save source configuration",exact:true}).click();
+  await expect.poll(async () => {
+    const result = await request.get("/api/v1/connectors/soundgasm/configuration", {headers:{"X-Api-Key":auth().apiKey}});
+    return (await result.json()).configuration.soundgasm_creators;
+  }).toEqual(["Quiet_Creator"]);
+  await expect(page.getByRole("heading", {name:"Rate limits",exact:true})).toBeVisible();
+  const denied = await request.put("/api/v1/connectors/youtube/configuration", {headers:{"X-Api-Key":auth().apiKey},data:{yt_dlp:"/tmp/untrusted"}});
+  expect(denied.status()).toBe(400);
   await page.getByRole("button", { name: "System", exact: true }).click();
   const task = page
     .getByRole("row")
@@ -235,7 +245,7 @@ test("creator profile tags filters and invalid batch rollback", async ({ page, r
   await expect(page.getByRole("button",{name:"Quiet Creator",exact:true})).not.toBeVisible();
   await page.getByLabel("Creator tag filter").fill("sleep");
   await page.getByRole("button",{name:"Quiet Creator",exact:true}).click();
-  await page.getByLabel("Monitored",{exact:true}).uncheck();
+  await page.locator(".monitor-controls").getByLabel("Monitored",{exact:true}).uncheck();
   await page.getByRole("button",{name:"Back",exact:true}).click();
   await page.getByLabel("Creator monitoring filter").selectOption("unmonitored");
   await expect(page.getByRole("button",{name:"Quiet Creator",exact:true})).toBeVisible();

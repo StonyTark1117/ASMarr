@@ -25,6 +25,7 @@ import scraper as core
 import plex_playlists
 import video_media
 import acquisition_profiles
+import source_configuration
 from categories import CATEGORIES
 
 STATE = Path(os.environ.get('ASMARR_STATE', '/var/lib/asmarr'))
@@ -51,7 +52,7 @@ def has_table(db,name):
 
 
 def configuration(db):
-    cfg = yaml.safe_load((CONFIG / 'sources.yaml').read_text())
+    cfg = source_configuration.apply(db, yaml.safe_load((CONFIG / 'sources.yaml').read_text()))
     cfg.update(state_db=str(DB), output_root=setting(db, 'root', '/mnt/cephfs/media/asmr'),
                secrets_file=str(CONFIG / 'source-secrets.json'), lock_file=str(STATE / 'provider.lock'))
     secrets = json.loads((CONFIG / 'source-secrets.json').read_text())
@@ -630,6 +631,14 @@ def process_queue(db,cfg):
 
 def dispatch(operation,args):
     with contextlib.closing(connect()) as db:
+        if operation in {'source-configuration', 'set-source-configuration'}:
+            try:
+                if operation == 'set-source-configuration':
+                    return source_configuration.save(db, args['kind'], args['configuration'])
+                path = CONFIG / 'sources.yaml'
+                return source_configuration.snapshot(db, yaml.safe_load(path.read_text()) or {} if path.exists() else {}, args['kind'])
+            except ValueError as error:
+                return {'error': str(error)}
         cfg,secrets=configuration(db)
         if operation=='migrate': return migrate(db,cfg)
         if operation=='scan':

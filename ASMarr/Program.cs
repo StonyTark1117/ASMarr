@@ -122,6 +122,14 @@ api.MapGet("/video/history",()=>new {assets=store.Query("SELECT a.*,m.* FROM med
 api.MapGet("/calendar",()=>store.Query("SELECT key,title,creator,published,state FROM assets WHERE published>0 ORDER BY published DESC"));
 api.MapGet("/connectors",()=>new {sources=store.Query("SELECT * FROM sources ORDER BY name"),configuration=new[]{"reddit","soundgasm","youtube","sfw"}.Select(k=>new{kind=k,enabled=store.Setting("source."+k+".enabled","true")=="true"})});
 api.MapPut("/connectors/{kind}",(string kind,JsonElement j)=>{if(kind is not ("reddit" or "soundgasm" or "youtube" or "sfw"))return Results.BadRequest();store.Set("source."+kind+".enabled",j.GetProperty("enabled").GetBoolean()?"true":"false");return Results.Ok();});
+api.MapGet("/connectors/{kind}/configuration",async(string kind,ProviderProcess provider,CancellationToken ct)=> {
+    var result=await provider.Run("source-configuration",new{kind},ct);
+    return result.TryGetProperty("error",out _)?Results.BadRequest(result):Results.Ok(result);
+});
+api.MapPut("/connectors/{kind}/configuration",async(string kind,JsonElement configuration,ProviderProcess provider,CancellationToken ct)=> {
+    var result=await provider.Run("set-source-configuration",new{kind,configuration},ct);
+    return result.TryGetProperty("error",out _)?Results.BadRequest(result):Results.Ok(result);
+});
 api.MapGet("/profiles",()=>store.Query("SELECT * FROM profiles"));
 api.MapPost("/profiles",(ProfileEdit p)=> {
     if(string.IsNullOrWhiteSpace(p.Name)||p.Name.Length>100)return Results.BadRequest(new{error="Profile name must contain 1–100 characters"});

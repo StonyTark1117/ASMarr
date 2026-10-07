@@ -131,6 +131,8 @@ function App() {
     [batchTags, setBatchTags] = useState(""),
     [batchTagMode, setBatchTagMode] = useState("add"),
     [form, setForm] = useState(""),
+    [sourcePanel, setSourcePanel] = useState<Row | null>(null),
+    [sourceForm, setSourceForm] = useState(""),
     [integration, setIntegration] = useState("prowlarr");
   useEffect(() => {
     api("auth")
@@ -1501,6 +1503,23 @@ function App() {
                           Enabled
                         </label>
                         <button
+                          onClick={async () => {
+                            try {
+                              const panel = await api(
+                                "connectors/" + c.kind + "/configuration",
+                              );
+                              setSourcePanel(panel);
+                              setSourceForm(
+                                JSON.stringify(panel.configuration, null, 2),
+                              );
+                            } catch (e) {
+                              setError(String(e));
+                            }
+                          }}
+                        >
+                          Configure {c.kind}
+                        </button>
+                        <button
                           onClick={() =>
                             command("source-test", { kind: c.kind })
                           }
@@ -1515,6 +1534,69 @@ function App() {
                       </div>
                     ))}
                   </section>
+                  {sourcePanel && (
+                    <section className="panel">
+                      <h2>{sourcePanel.kind} source configuration</h2>
+                      <p className="muted">
+                        Public discovery filters and polling limits only.
+                        Credentials and pinned executable paths are kept in
+                        protected server configuration. Changing filters can
+                        invalidate shadow parity and requires review before
+                        cutover.
+                      </p>
+                      <textarea
+                        aria-label="Source configuration"
+                        rows={12}
+                        value={sourceForm}
+                        onChange={(e) => setSourceForm(e.target.value)}
+                      />
+                      <button
+                        onClick={async () => {
+                          try {
+                            await api(
+                              "connectors/" +
+                                sourcePanel.kind +
+                                "/configuration",
+                              "PUT",
+                              JSON.parse(sourceForm),
+                            );
+                            setSourcePanel(
+                              await api(
+                                "connectors/" +
+                                  sourcePanel.kind +
+                                  "/configuration",
+                              ),
+                            );
+                            setToast("Source configuration saved");
+                          } catch (e) {
+                            setError(String(e));
+                          }
+                        }}
+                      >
+                        Save source configuration
+                      </button>
+                      <button onClick={() => setSourcePanel(null)}>
+                        Close source configuration
+                      </button>
+                      <h3>Checkpoints</h3>
+                      <p>{sourcePanel.checkpointPolicy}</p>
+                      <pre>
+                        {JSON.stringify(sourcePanel.checkpoints, null, 2)}
+                      </pre>
+                      <h3>Rate limits</h3>
+                      <pre>
+                        {JSON.stringify(sourcePanel.rateLimits, null, 2)}
+                      </pre>
+                      <h3>Latest test result</h3>
+                      <pre>
+                        {JSON.stringify(
+                          sourcePanel.latestTest || "No test recorded",
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </section>
+                  )}
                   <section className="panel">
                     <h2>Endpoint health</h2>
                     <table>
@@ -1556,15 +1638,61 @@ function App() {
                 <>
                   <section className="panel">
                     <h2>Create acquisition profile</h2>
-                    <form onSubmit={async e => {
-                      e.preventDefault();const target=e.currentTarget;const fields=new FormData(target);
-                      try {
-                        const saved=await act("profiles","POST",{name:fields.get("name"),settings:JSON.parse(String(fields.get("settings")))});
-                        if(saved){target.reset();notify("Profile created");}
-                      } catch {setError("Invalid profile JSON");}
-                    }}>
-                      <label>New profile name<input name="name" required maxLength={100}/></label>
-                      <label>New profile rules<textarea name="settings" rows={6} defaultValue={JSON.stringify({minimumDuration:0,allowedFormats:[".m4a",".mp3",".aac",".opus",".flac",".wav"],sourcePriorities:["soundgasm","youtube","reddit"],directRetries:3,backlogLimit:3,fallback:true},null,2)}/></label>
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        const target = e.currentTarget;
+                        const fields = new FormData(target);
+                        try {
+                          const saved = await act("profiles", "POST", {
+                            name: fields.get("name"),
+                            settings: JSON.parse(
+                              String(fields.get("settings")),
+                            ),
+                          });
+                          if (saved) {
+                            target.reset();
+                            notify("Profile created");
+                          }
+                        } catch {
+                          setError("Invalid profile JSON");
+                        }
+                      }}
+                    >
+                      <label>
+                        New profile name
+                        <input name="name" required maxLength={100} />
+                      </label>
+                      <label>
+                        New profile rules
+                        <textarea
+                          name="settings"
+                          rows={6}
+                          defaultValue={JSON.stringify(
+                            {
+                              minimumDuration: 0,
+                              allowedFormats: [
+                                ".m4a",
+                                ".mp3",
+                                ".aac",
+                                ".opus",
+                                ".flac",
+                                ".wav",
+                              ],
+                              sourcePriorities: [
+                                "soundgasm",
+                                "youtube",
+                                "reddit",
+                              ],
+                              directRetries: 3,
+                              backlogLimit: 3,
+                              fallback: true,
+                            },
+                            null,
+                            2,
+                          )}
+                        />
+                      </label>
                       <button className="primary">Create profile</button>
                     </form>
                   </section>

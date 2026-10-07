@@ -52,6 +52,13 @@ REST resources are under `/api/v1`; authenticated OpenAPI is at
 commands. A renewable SQLite lease serializes provider execution across tasks;
 interrupted commands remain visible rather than silently replaying mutations.
 
+Settings → Sources exposes validated discovery filters and polling limits,
+read-only discovery cursors, the latest credential-test status, and retry/rate
+policy. Public overrides are stored in SQLite; credentials and pinned executable
+paths remain in protected server configuration and cannot be set through that
+payload. Source quota remaining is explicitly unknown, not assumed unlimited.
+Changing discovery filters requires reviewing shadow parity again before cutover.
+
 Acquisition profiles preserve the migrated legacy text policy unless custom
 fields are supplied. Custom fields are `allowedSpeakers` and `allowedAudiences`
 (arrays of `F`, `M`, `NB`, `A`, or `ANY`), `requireSpeakerTag`,
