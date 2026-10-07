@@ -484,7 +484,7 @@ function App() {
         >
           <span className="pulse" />
           <span>{live ? "Connected to CT130" : "Connecting to CT130"}</span>
-          <small>ASMarr v0.1.0</small>
+          <small>ASMarr v0.2.0</small>
         </div>
       </aside>
       <div className="workspace">
@@ -1736,7 +1736,7 @@ function App() {
         </main>
         <footer>
           ASMarr <span>·</span> Built for unhurried listening{" "}
-          <span className="footer-right">v0.1.0</span>
+          <span className="footer-right">v0.2.0</span>
         </footer>
       </div>
       {toast && (

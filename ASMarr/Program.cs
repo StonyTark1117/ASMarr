@@ -149,7 +149,7 @@ api.MapGet("/health",()=>new {database=store.Query("PRAGMA quick_check"),sources
 api.MapGet("/logs",()=>store.Query("SELECT * FROM logs ORDER BY id DESC LIMIT 500"));
 api.MapGet("/backups",()=>Directory.EnumerateFiles(System.IO.Path.Combine(store.Root,"backups"),"*.db").Select(p=>new {name=System.IO.Path.GetFileName(p),size=new FileInfo(p).Length,created=new FileInfo(p).CreationTimeUtc}));
 api.MapGet("/shadow-cycles",()=>store.Query("SELECT * FROM shadow_cycles ORDER BY id DESC"));
-api.MapGet("/system/updates",()=>new {version="0.1.0",automatic=false,channel="local",message="Updates are installed through an audited deployment"});
+api.MapGet("/system/updates",()=>new {version="0.2.0",automatic=false,channel="local",message="Updates are installed through an audited deployment"});
 app.MapHub<StatusHub>("/api/v1/events").RequireAuthorization();app.MapOpenApi().RequireAuthorization();
 app.MapFallbackToFile("index.html");app.Run();
 
