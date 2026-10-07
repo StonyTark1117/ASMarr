@@ -113,26 +113,33 @@ test("SignalR pushes live command state to queue screen", async ({
   page,
   request,
 }) => {
-  const frames: string[] = [];
-  page.on("websocket", (ws) =>
-    ws.on("framereceived", (event) => frames.push(String(event.payload))),
-  );
+  let queueRefreshes = 0;
+  const errors: string[] = [];
+  page.on("response", (response) => {
+    if (response.url().endsWith("/api/v1/queue")) queueRefreshes++;
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
   await login(page);
+  await expect(
+    page.getByLabel("Live updates connected"),
+    errors.join("\n"),
+  ).toBeVisible({ timeout: 10000 });
   await page.getByRole("button", { name: "Queue", exact: true }).click();
+  await expect(
+    page.getByText("No commands running. Your library is up to date."),
+  ).toBeVisible();
+  const baseline = queueRefreshes;
   await request.post("/api/v1/commands", {
     headers: { "X-Api-Key": auth().apiKey },
     data: { name: "health", arguments: {} },
   });
+  // The five-second assertion precedes the fifteen-second polling fallback and
+  // accepts WebSockets or Server-Sent Events negotiated by SignalR.
   await expect
-    .poll(() =>
-      frames.some((f) => f.includes("status") && f.includes("running")),
-    )
-    .toBe(true);
-  await expect
-    .poll(() =>
-      frames.some((f) => f.includes("status") && f.includes("finished")),
-    )
-    .toBe(true);
+    .poll(() => queueRefreshes, { timeout: 5000 })
+    .toBeGreaterThan(baseline);
   await expect(
     page.getByText("No commands running. Your library is up to date."),
   ).toBeVisible();

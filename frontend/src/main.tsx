@@ -109,6 +109,7 @@ function App() {
     [status, setStatus] = useState<Row>({}),
     [error, setError] = useState(""),
     [toast, setToast] = useState(""),
+    [live, setLive] = useState(false),
     [loading, setLoading] = useState(false),
     [tick, setTick] = useState(0),
     [selected, setSelected] = useState<number[]>([]),
@@ -134,7 +135,13 @@ function App() {
       .configureLogging(LogLevel.Error)
       .build();
     hub.on("status", () => setTick((n) => n + 1));
-    hub.start().catch(() => {});
+    hub.onreconnecting(() => setLive(false));
+    hub.onreconnected(() => setLive(true));
+    hub.onclose(() => setLive(false));
+    hub
+      .start()
+      .then(() => setLive(true))
+      .catch(() => setLive(false));
     const timer = setInterval(() => setTick((n) => n + 1), 15000);
     return () => {
       clearInterval(timer);
@@ -413,9 +420,14 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="aside-footer">
+        <div
+          className="aside-footer"
+          aria-label={
+            live ? "Live updates connected" : "Live updates reconnecting"
+          }
+        >
           <span className="pulse" />
-          <span>Connected to CT130</span>
+          <span>{live ? "Connected to CT130" : "Connecting to CT130"}</span>
           <small>ASMarr v0.1.0</small>
         </div>
       </aside>
