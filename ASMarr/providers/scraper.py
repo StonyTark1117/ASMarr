@@ -570,6 +570,32 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
 
 
 def tag_audio(path, creator, title, published=0):
+    notes = 'Original title: ' + title
+    versions = compact_title(title)[1]
+    if versions:
+        notes += '\nVersion: ' + ', '.join(versions)
+    from mutagen.wave import WAVE
+    from mutagen.aac import AAC
+    raw = mutagen.File(str(path))
+    if isinstance(raw,AAC):return
+    if isinstance(raw,WAVE):
+        from mutagen.id3 import TPE1,TPE2,TALB,TIT2,TCON,TDRC,COMM,TXXX
+        if raw.tags is None:raw.add_tags()
+        for frame,value in [(TPE1,creator),(TPE2,creator),(TALB,'Singles'),
+                            (TIT2,compact_title(title)[0]),(TCON,'ASMR')]:
+            raw.tags.add(frame(encoding=3,text=[value]))
+        if published:raw.tags.add(TDRC(encoding=3,text=[dt.datetime.fromtimestamp(published,dt.timezone.utc).strftime('%Y-%m-%d')]))
+        raw.tags.add(COMM(encoding=3,lang='eng',desc='ASMR source',text=notes))
+        raw.tags.add(TXXX(encoding=3,desc='ORIGINALTITLE',text=title))
+        raw.tags.add(TXXX(encoding=3,desc='VERSION',text=', '.join(versions)))
+        raw.save();return
+    if raw is None:
+        # Raw ADTS AAC has no writable metadata container. Preserve its bytes
+        # instead of rejecting valid audio or silently remuxing/transcoding it.
+        # Creator/title provenance remains in the database and naming layout.
+        try:AAC(str(path))
+        except mutagen.MutagenError:raise MediaError('unsupported_tag_format') from None
+        return
     f = mutagen.File(str(path), easy=True)
     if f is None:
         raise MediaError('unsupported_tag_format')
@@ -580,10 +606,6 @@ def tag_audio(path, creator, title, published=0):
         f['date'] = [dt.datetime.fromtimestamp(published, dt.timezone.utc).strftime('%Y-%m-%d')]
     f.save()
     raw = mutagen.File(str(path))
-    notes = 'Original title: ' + title
-    versions = compact_title(title)[1]
-    if versions:
-        notes += '\nVersion: ' + ', '.join(versions)
     from mutagen.mp4 import MP4
     from mutagen.mp3 import MP3
     if isinstance(raw, MP4):
