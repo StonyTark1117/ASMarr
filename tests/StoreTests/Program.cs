@@ -58,5 +58,16 @@ Assert(CreatorRegistration.Link(store,999,new("reddit","Unowned")).Error is not 
 Assert(CreatorRegistration.Link(store,1,new("soundgasm","handle")).Error is not null,"linking cannot claim another creator identity");
 Assert(CreatorRegistration.Link(store,1,new("soundgasm",null!)).Error is not null,"null source handles are rejected safely");
 Assert(CreatorRegistration.Link(store,1,new("soundgasm","SecondHandle")).Id is not null,"existing creators can link additional source identities");
+store.Execute("UPDATE creators SET monitor_video=1 WHERE id=1");
+store.Execute("INSERT INTO backfill_jobs(id,creator_id,media_kind,state,cursor,started,updated) VALUES('resume-video',1,'Video','running','{\"phase\":\"known\",\"index\":2}',$now,$now)",("now",DateTimeOffset.UtcNow.ToString("O")));
+store.InterruptRunningVideoBackfills();
+Assert(store.Query("SELECT state FROM backfill_jobs WHERE id='resume-video'")[0]["state"]!.ToString()=="interrupted","service restart checkpoints an executing video history scan");
+Assert(store.EnqueueResumableVideoBackfills(TimeSpan.FromMinutes(5))==1,"interrupted video history scan is requeued automatically");
+Assert(store.Query("SELECT * FROM commands WHERE name='video-backfill' AND state='queued' AND CAST(json_extract(arguments,'$.creatorId') AS INTEGER)=1").Count==1,"resumed video history command retains creator scope");
+Assert(store.EnqueueResumableVideoBackfills(TimeSpan.FromMinutes(5))==0,"recovery never duplicates an active video history command");
+store.Execute("UPDATE commands SET state='failed' WHERE name='video-backfill';UPDATE backfill_jobs SET state='failed',updated=$old WHERE id='resume-video'",("old",DateTimeOffset.UtcNow.AddMinutes(-10).ToString("O")));
+Assert(store.EnqueueResumableVideoBackfills(TimeSpan.FromMinutes(5))==1,"transient video history failures retry after the bounded delay");
+store.Execute("UPDATE creators SET monitor_video=0 WHERE id=1;UPDATE commands SET state='failed' WHERE name='video-backfill';UPDATE backfill_jobs SET state='interrupted' WHERE id='resume-video'");
+Assert(store.EnqueueResumableVideoBackfills(TimeSpan.Zero)==0,"disabled video monitoring never resumes a cancelled history scan");
 Console.WriteLine($"{assertions} store integration assertions passed");
 SqliteConnection.ClearAllPools();Directory.Delete(root,true);

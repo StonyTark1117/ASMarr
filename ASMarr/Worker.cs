@@ -9,9 +9,12 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
     readonly string owner=Guid.NewGuid().ToString("N");
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // A terminated process cannot resume an executing command. Retain an
-        // interrupted record for explicit retry rather than replaying a mutation.
+        // A terminated process cannot resume an executing command. Backfill
+        // checkpoints are safe to requeue; other interrupted mutations remain
+        // available for explicit review.
         store.Execute("UPDATE commands SET state='interrupted',finished=$now,error='Service restarted during execution' WHERE state='running'",("now",DateTimeOffset.UtcNow.ToString("O")));
+        store.InterruptRunningVideoBackfills();
+        var nextBackfillRecovery=DateTimeOffset.MinValue;
         if(store.Query("SELECT key FROM assets LIMIT 1").Count==0&&File.Exists(System.IO.Path.Combine(store.ConfigRoot,"sources.yaml"))&&store.Query("SELECT id FROM commands WHERE name='migration' AND state='queued'").Count==0)
             store.Enqueue("migration",new {});
         while(!stoppingToken.IsCancellationRequested)
@@ -19,6 +22,11 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             try
             {
                 var now=DateTimeOffset.UtcNow.ToString("O");
+                if(DateTimeOffset.UtcNow>=nextBackfillRecovery)
+                {
+                    store.EnqueueResumableVideoBackfills(TimeSpan.FromMinutes(5));
+                    nextBackfillRecovery=DateTimeOffset.UtcNow.AddMinutes(1);
+                }
                 foreach(var t in store.Query("SELECT * FROM tasks WHERE enabled=1 AND next_run<=$now",("now",now)))
                 {
                     string name=t["name"]!.ToString()!;
@@ -42,7 +50,10 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
         if(!store.TryAcquireLease("providers",owner,TimeSpan.FromMinutes(2)))return;
         using var leaseCancel=CancellationTokenSource.CreateLinkedTokenSource(ct);
         var lease=Task.Run(async()=> { while(!leaseCancel.IsCancellationRequested) { await Task.Delay(30000,leaseCancel.Token); if(!store.RenewLease("providers",owner,TimeSpan.FromMinutes(2))){leaseCancel.Cancel();return;} } },leaseCancel.Token);
-        store.Execute("UPDATE commands SET state='running',started=$now WHERE id=$id AND state='queued'",("id",id),("now",now.ToString("O")));
+        if(store.Execute("UPDATE commands SET state='running',started=$now WHERE id=$id AND state='queued'",("id",id),("now",now.ToString("O")))!=1)
+        {
+            store.ReleaseLease("providers",owner);leaseCancel.Cancel();try{await lease;}catch(OperationCanceledException){}return;
+        }
         await hub.Clients.All.SendAsync("status",new {id,name,state="running"},ct);
         try
         {
@@ -54,7 +65,7 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             {
                 "migration" => await providers.Run("migrate",new {},timeout.Token),
                 "discovery" => await providers.Run("discover",new {shadow,kind=args.RootElement.TryGetProperty("kind",out var k)?k.GetString():"all"},timeout.Token),
-                "video-backfill" => await providers.Run("video-backfill",args.RootElement,timeout.Token),
+                "video-backfill" => await RunVideoBackfill(args.RootElement,id,timeout.Token),
                 "disk-scan" => await providers.Run("scan",new {},timeout.Token),
                 "plex-verify" => await providers.Run("plex-verify",new {},timeout.Token),
                 "playlists-verify" => await providers.Run("playlists-verify",new {},timeout.Token),
@@ -79,6 +90,11 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             store.Execute("UPDATE tasks SET last_run=$now,last_result=$result WHERE name=$name",("name",name),("now",DateTimeOffset.UtcNow.ToString("O")),("result",json));
             store.Log("info",name+" completed");
             if(name is "video-backfill" or "video-queue")await hub.Clients.All.SendAsync("assetState",new {mediaKind="Video",command=id,state="updated"},ct);
+            if(name=="video-queue"&&result is JsonElement videoResult&&videoResult.TryGetProperty("jobs",out var videoJobs))
+                foreach(var job in videoJobs.EnumerateArray())
+                    await hub.Clients.All.SendAsync("assetState",new {mediaKind="Video",command=id,
+                        recordingKey=job.TryGetProperty("key",out var key)?key.GetString():null,
+                        state=job.TryGetProperty("status",out var state)?state.GetString():"updated"},ct);
             if(name=="queue"&&!shadow&&result is JsonElement queueResult&&queueResult.TryGetProperty("saved",out var saved)&&saved.GetArrayLength()>0)
             {
                 try{await notifications.Notify($"ASMarr imported {saved.GetArrayLength()} recordings.",ct);}catch(Exception){store.Log("warning","Import succeeded; notification delivery failed");}
@@ -96,5 +112,27 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             store.ReleaseLease("providers",owner);
             await hub.Clients.All.SendAsync("status",new {id,name,state="finished"},ct);
         }
+    }
+    async Task<JsonElement> RunVideoBackfill(JsonElement arguments,string commandId,CancellationToken ct)
+    {
+        int creatorId=arguments.GetProperty("creatorId").GetInt32();
+        var run=providers.Run("video-backfill",arguments,ct);string? previous=null;
+        while(!run.IsCompleted)
+        {
+            var job=store.Query("SELECT * FROM backfill_jobs WHERE creator_id=$creator AND media_kind='Video' ORDER BY started DESC LIMIT 1",("creator",creatorId)).FirstOrDefault();
+            if(job!=null)
+            {
+                string current=JsonSerializer.Serialize(job);
+                if(current!=previous)
+                {
+                    previous=current;
+                    await hub.Clients.All.SendAsync("backfillProgress",new {mediaKind="Video",command=commandId,creatorId,job},ct);
+                }
+            }
+            await Task.WhenAny(run,Task.Delay(500,ct));
+        }
+        var result=await run;
+        await hub.Clients.All.SendAsync("backfillProgress",new {mediaKind="Video",command=commandId,creatorId,result},ct);
+        return result;
     }
 }

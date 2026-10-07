@@ -149,6 +149,7 @@ function App() {
       .build();
     hub.on("status", () => setTick((n) => n + 1));
     hub.on("assetState", () => setTick((n) => n + 1));
+    hub.on("backfillProgress", () => setTick((n) => n + 1));
     hub.onreconnecting(() => setLive(false));
     hub.onreconnected(() => setLive(true));
     hub.onclose(() => setLive(false));
@@ -672,21 +673,53 @@ function App() {
                     act("recordings/action", "POST", {
                       key: recording.recording.key,
                       action: "retry",
+                      mediaKind: "Audio",
                     })
                   }
                 >
-                  Retry
+                  Retry audio
                 </button>
                 <button
                   onClick={() =>
                     act("recordings/action", "POST", {
                       key: recording.recording.key,
                       action: "suppress",
+                      mediaKind: "Audio",
                     })
                   }
                 >
-                  Suppress
+                  Suppress audio
                 </button>
+                {(recording.media || []).some(
+                  (m: Row) => m.media_kind === "Video",
+                ) && (
+                  <>
+                    <button
+                      onClick={async () => {
+                        await act("recordings/action", "POST", {
+                          key: recording.recording.key,
+                          action: "retry",
+                          mediaKind: "Video",
+                        });
+                        await openRecording(recording.recording);
+                      }}
+                    >
+                      Retry video
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await act("recordings/action", "POST", {
+                          key: recording.recording.key,
+                          action: "suppress",
+                          mediaKind: "Video",
+                        });
+                        await openRecording(recording.recording);
+                      }}
+                    >
+                      Suppress video
+                    </button>
+                  </>
+                )}
                 <button
                   onClick={() =>
                     act("recordings/action", "POST", {

@@ -33,15 +33,20 @@ try:
         except requests.RequestException:pass
         time.sleep(.2)
     library=session/'library';library.mkdir(exist_ok=True)
-    with sqlite3.connect(state/'asmarr.db') as db:
+    with sqlite3.connect(state/'asmarr.db',timeout=30) as db:
+        db.execute('PRAGMA busy_timeout=30000')
         db.execute('UPDATE settings SET value=? WHERE key=?',(str(library),'root'))
         db.execute('UPDATE tasks SET enabled=0')
         db.execute('INSERT OR IGNORE INTO profiles VALUES(1,?,?)',('Fixture profile',json.dumps({'directRetries':3,'allowedFormats':['.m4a']})))
         for id,name in [(1,'Quiet Creator'),(2,'Soft Voice')]:
             db.execute('INSERT OR IGNORE INTO creators(id,name,path) VALUES(?,?,?)',(id,name,str(library/name)))
             db.execute('INSERT OR IGNORE INTO identities(creator_id,kind,handle) VALUES(?,?,?)',(id,'soundgasm','Fixture'+str(id)))
-        db.execute("INSERT OR IGNORE INTO assets(key,url,targets,source,creator,title,published,state) VALUES('fixture:bedtime','https://example.invalid/bedtime','[]','soundgasm:Fixture1','Quiet Creator','A quiet bedtime recording',1791400000,'pending')")
+        db.execute("INSERT OR IGNORE INTO assets(key,url,targets,source,creator,title,published,state) VALUES('fixture:bedtime','https://example.invalid/bedtime',?,'soundgasm:Fixture1','Quiet Creator','A quiet bedtime recording',1791400000,'pending')",
+                   (json.dumps([['youtube','https://www.youtube.com/watch?v=abcdefghijk']]),))
         db.execute("INSERT OR IGNORE INTO sources(name,status,last_success,details) VALUES('soundgasm:Fixture1','healthy',1791400000,'{}')")
+    (config/'sources.yaml').write_text('{}\n')
+    (config/'source-secrets.json').write_text('{}\n')
+    (config/'sources.yaml').chmod(0o600);(config/'source-secrets.json').chmod(0o600)
     (session/'ready').touch()
     process.wait()
 finally:

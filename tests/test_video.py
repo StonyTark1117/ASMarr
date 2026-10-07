@@ -14,8 +14,10 @@ import video_media as v
 SCHEMA = '''
 CREATE TABLE assets(key TEXT PRIMARY KEY,url TEXT,targets TEXT,source TEXT,creator TEXT,title TEXT,
  published INTEGER,saved_path TEXT,state TEXT,attempts INTEGER DEFAULT 0,retry_after INTEGER DEFAULT 0,error TEXT,acquired INTEGER);
+CREATE TABLE aliases(id TEXT PRIMARY KEY,asset_key TEXT);
 CREATE TABLE creators(id INTEGER PRIMARY KEY,name TEXT UNIQUE,monitored INTEGER,profile_id INTEGER,
  monitor_video INTEGER DEFAULT 0,video_quality_profile_id INTEGER DEFAULT 1);
+CREATE TABLE identities(id INTEGER PRIMARY KEY,creator_id INTEGER,kind TEXT,handle TEXT,enabled INTEGER DEFAULT 1);
 CREATE TABLE media_assets(recording_key TEXT,media_kind TEXT,wanted INTEGER,state TEXT,saved_path TEXT,
  source_url TEXT,provider_id TEXT,attempts INTEGER DEFAULT 0,retry_after INTEGER DEFAULT 0,error TEXT,acquired INTEGER,details TEXT DEFAULT '{}',PRIMARY KEY(recording_key,media_kind));
 CREATE TABLE video_candidates(id INTEGER PRIMARY KEY,recording_key TEXT,provider TEXT,provider_id TEXT,url TEXT,
@@ -25,6 +27,9 @@ CREATE TABLE video_candidates(id INTEGER PRIMARY KEY,recording_key TEXT,provider
 CREATE TABLE video_quality_profiles(id INTEGER PRIMARY KEY,name TEXT,resolution TEXT,settings TEXT,is_builtin INTEGER);
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
 CREATE TABLE history(id INTEGER PRIMARY KEY,at TEXT,event TEXT,recording_key TEXT,details TEXT);
+CREATE TABLE backfill_jobs(id TEXT PRIMARY KEY,creator_id INTEGER,media_kind TEXT,state TEXT,
+ discovered INTEGER DEFAULT 0,eligible INTEGER DEFAULT 0,total INTEGER DEFAULT 0,cursor TEXT,
+ started TEXT,updated TEXT,finished TEXT,error TEXT);
 '''
 
 
@@ -37,6 +42,7 @@ class VideoTests(unittest.TestCase):
         self.db.execute("INSERT INTO creators VALUES(1,'Creator',1,1,1,1)")
         self.db.execute("INSERT INTO video_quality_profiles VALUES(1,'Any','Any','{}',1)")
         self.db.execute("INSERT INTO assets(key,url,targets,source,creator,title,published,state) VALUES('recording','https://youtu.be/abcdefghijk','[]','youtube','Creator','A visual recording',1704067200,'pending')")
+        self.db.execute("INSERT INTO aliases VALUES('recording','recording')")
         self.db.execute("INSERT INTO media_assets(recording_key,media_kind,wanted,state) VALUES('recording','Audio',1,'wanted')")
         self.cfg = {'output_root': str(self.audio), 'video_root': str(self.video),
                     'download_root': str(self.downloads), 'video_free_space_gib': 0,
@@ -67,6 +73,20 @@ class VideoTests(unittest.TestCase):
         v.add_candidate(self.db, 'recording', 'reddit', 'https://v.redd.it/media/DASH_720.mp4', post)
         provider = self.db.execute("SELECT provider_id FROM video_candidates WHERE provider='reddit'").fetchone()[0]
         self.assertEqual(provider, 'original')
+
+    def test_media_fingerprint_deduplicates_mirrored_provider_ids(self):
+        details = {'duration': 301.5, 'filesize': 987654321, 'width': 1920, 'height': 1080}
+        v.add_candidate(self.db, 'recording', 'youtube', 'https://youtu.be/abcdefghijk',
+                        details=details)
+        self.db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)
+                         VALUES('mirror','https://v.redd.it/different','[]','reddit','Creator','Mirror',1704067201,'pending')""")
+        self.db.execute("INSERT INTO aliases VALUES('mirror','mirror')")
+        key, added = v.add_candidate(self.db, 'mirror', 'reddit',
+                                     'https://v.redd.it/different/DASH_1080.mp4',
+                                     {'id':'different'}, details)
+        self.assertFalse(added)
+        self.assertEqual(key, 'recording')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM video_candidates').fetchone()[0], 1)
 
     def test_any_prefers_highest_and_caps_reject_above_target(self):
         candidates = [
@@ -149,6 +169,91 @@ class VideoTests(unittest.TestCase):
         with patch.object(v, 'download_video', return_value={'status':'imported'}) as download:
             result = v.process_queue(self.db, self.cfg)
         self.assertEqual(result['concurrency'], 1); self.assertEqual(download.call_count, 1)
+
+    def test_terminal_source_is_unavailable_while_transient_failure_retries(self):
+        v.add_candidate(self.db, 'recording', 'youtube', 'https://youtu.be/abcdefghijk')
+        with patch.object(v, 'download_video', side_effect=v.VideoUnavailable('video_source_unavailable')):
+            result = v.process_queue(self.db, self.cfg)
+        row = self.db.execute("SELECT state,attempts FROM media_assets WHERE media_kind='Video'").fetchone()
+        self.assertEqual((row['state'], row['attempts']), ('unavailable', 0))
+        self.assertEqual(result['jobs'][0]['status'], 'unavailable')
+        self.db.execute("UPDATE media_assets SET state='wanted',error=NULL")
+        with patch.object(v, 'download_video', side_effect=ValueError('video_download_failed')):
+            result = v.process_queue(self.db, self.cfg)
+        row = self.db.execute("SELECT state,attempts,retry_after FROM media_assets WHERE media_kind='Video'").fetchone()
+        self.assertEqual((row['state'], row['attempts']), ('failed', 1))
+        self.assertGreater(row['retry_after'], 0)
+        self.assertEqual(result['jobs'][0]['status'], 'failed')
+
+    def test_private_download_and_below_minimum_duration_are_terminal(self):
+        candidate = {'url':'https://youtu.be/abcdefghijk', 'provider':'youtube',
+                     'provider_id':'abcdefghijk'}
+        failed = Mock(returncode=1, stdout='', stderr='ERROR: Private video')
+        with patch.object(v.subprocess, 'run', return_value=failed):
+            with self.assertRaisesRegex(v.VideoUnavailable, 'source_unavailable'):
+                v.download_video(self.db, self.cfg, 'recording', candidate)
+        source = self.video_file()
+        self.cfg['youtube_min_duration_seconds'] = 2
+        with self.assertRaisesRegex(v.VideoUnavailable, 'below_minimum_duration'):
+            v.import_video(self.db, self.cfg, 'recording', source, candidate)
+        self.assertFalse(list(self.video.rglob('*.mp4')))
+
+    def test_interrupted_backfill_resumes_from_durable_cursor(self):
+        self.db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)
+                         VALUES('second','https://example.invalid/second',?,'reddit','Creator','[F4A] ASMR second',1704067201,'pending')""",
+                        (json.dumps([['youtube','https://youtu.be/secondvideo1']]),))
+        self.db.execute("INSERT INTO aliases VALUES('second','second')")
+        self.db.execute("""INSERT INTO backfill_jobs(id,creator_id,media_kind,state,discovered,eligible,total,cursor,started,updated)
+                         VALUES('resume',1,'Video','interrupted',0,0,1,?,'then','then')""",
+                        (json.dumps({'phase':'known','index':1}),))
+        result = v.backfill(self.db, self.cfg, {}, {'creatorId':1}, b.core)
+        self.assertEqual(result['state'], 'completed')
+        self.assertEqual(self.db.execute("SELECT count(*) FROM video_candidates").fetchone()[0], 1)
+        row = self.db.execute("SELECT state,total,cursor FROM backfill_jobs").fetchone()
+        self.assertEqual((row['state'], row['total'], row['cursor']), ('completed', 2, None))
+
+    def test_full_history_uses_approved_youtube_and_reddit_with_eligibility(self):
+        self.db.execute("INSERT INTO identities(creator_id,kind,handle) VALUES(1,'youtube','channel-1'),(1,'reddit','creator_user')")
+        eligible = {'id':'youtube001a','title':'ASMR sleep','duration':300,
+                    'availability':'public','live_status':'not_live','timestamp':1704067202,
+                    'height':1080}
+        private = {'id':'youtube002b','title':'ASMR private','duration':300,
+                   'availability':'private','live_status':'not_live','timestamp':1704067203}
+        reddit_video = {'id':'reddit1','author':'Creator_User','title':'[F4A] ASMR visual',
+                        'over_18':False,'created_utc':1704067204,
+                        'url_overridden_by_dest':'https://v.redd.it/redditmedia1',
+                        'secure_media':{'reddit_video':{'duration':300,'fallback_url':'https://v.redd.it/redditmedia1/DASH_720.mp4'}}}
+        reddit_short = {'id':'reddit2','author':'creator_user','title':'[F4A] ASMR short',
+                        'over_18':False,'created_utc':1704067205,
+                        'url_overridden_by_dest':'https://v.redd.it/shortmedia1',
+                        'secure_media':{'reddit_video':{'duration':30,'fallback_url':'https://v.redd.it/shortmedia1/DASH_720.mp4'}}}
+        reddit_youtube = {'id':'reddit3','author':'creator_user','title':'[F4A] ASMR linked',
+                          'over_18':False,'created_utc':1704067206,
+                          'url_overridden_by_dest':'https://youtu.be/youtube001a'}
+        cfg = dict(self.cfg, subreddits=['asmr'], youtube_min_duration_seconds=180,
+                   video_reddit_history_pages=5)
+        with patch.object(b.core.youtube, 'listing', return_value=[eligible, private]), \
+             patch.object(b.core.Reddit, 'page', return_value=([reddit_video, reddit_short, reddit_youtube], None)):
+            result = v.backfill(self.db, cfg, {'reddit':{}}, {'creatorId':1}, b.core)
+        self.assertEqual(result['state'], 'completed')
+        candidates = self.db.execute("SELECT provider,provider_id FROM video_candidates ORDER BY provider").fetchall()
+        self.assertEqual([(r['provider'],r['provider_id']) for r in candidates],
+                         [('reddit','reddit1'),('youtube','youtube001a')])
+        self.assertEqual(result['discovered'], 5)
+        self.assertEqual(result['eligible'], 2)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM media_assets WHERE media_kind='Video' AND wanted=1").fetchone()[0], 2)
+
+    def test_scheduled_reddit_target_extraction_filters_age_and_duration(self):
+        base = {'id':'reddit1','author':'creator','title':'[F4A] ASMR visual',
+                'over_18':False,'url_overridden_by_dest':'https://v.redd.it/media1',
+                'selftext':'mirror https://youtu.be/abcdefghijk',
+                'secure_media':{'reddit_video':{'duration':300}}}
+        self.assertEqual(v.reddit_video_targets(base, 180), [
+            ('reddit','https://v.redd.it/media1'),
+            ('youtube','https://www.youtube.com/watch?v=abcdefghijk')])
+        self.assertEqual(v.reddit_video_targets(dict(base, over_18=True), 180), [])
+        short = dict(base, secure_media={'reddit_video':{'duration':30}}, selftext='')
+        self.assertEqual(v.reddit_video_targets(short, 180), [])
 
     def test_roots_and_interactive_prowlarr_safety(self):
         with self.assertRaisesRegex(ValueError, 'overlap'): v.validate_roots('/media/asmr', '/media/asmr/video')

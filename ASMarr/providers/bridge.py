@@ -238,14 +238,28 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
     active['_profile_rules']=profile_rules
     original_enqueue=core.enqueue
     original_listing=core.youtube.listing
+    original_targets=core.targets
     capture=CaptureHTTP()
     youtube_fixtures={}
+    reddit_video_posts={}
     def listing(channel,config,limit=None):
         result=original_listing(channel,config,limit)
         youtube_fixtures[(channel['channel_id'],limit)]=result
         return result
     core.youtube.listing=listing
     monitored={r['name'] for r in db.execute('SELECT name FROM creators WHERE monitored=1')}
+    def discovery_targets(post, config):
+        options=original_targets(post,config)
+        author=post.get('author','')
+        creator=active.get('_identity_creators',{}).get('reddit:'+author.casefold(),active.get('creator_aliases',{}).get(author,author))
+        enabled=working.execute('SELECT monitor_video FROM creators WHERE name=?',(creator,)).fetchone()
+        if enabled and enabled[0]:
+            for provider,url in video_media.reddit_video_targets(post,config.get('youtube_min_duration_seconds',180)):
+                target=['youtube' if provider=='youtube' else 'reddit_media',url]
+                if target not in options:options.append(target)
+                reddit_video_posts[url]=post
+        return options
+    core.targets=discovery_targets
     def monitored_enqueue(conn,sid,source,creator,title,options,published=0):
         if creator not in monitored:
             configured=set(active.get('allowlist',[]))|set(active.get('soundgasm_creators',[]))
@@ -266,13 +280,14 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
                 for target_kind,url in options:
                     host=(urllib.parse.urlparse(url).hostname or '').lower()
                     provider='youtube' if target_kind=='youtube' else 'reddit' if host=='v.redd.it' else None
-                    if provider:video_media.add_candidate(conn,recording['key'],provider,url)
+                    if provider:video_media.add_candidate(conn,recording['key'],provider,url,
+                                                          post=reddit_video_posts.get(video_media.canonical_url(url)))
         return result
     core.enqueue=monitored_enqueue
     try:
         reports=core.discover(working,active,secrets,capture,selected,inspect=shadow)
     finally:
-        core.enqueue=original_enqueue;core.youtube.listing=original_listing
+        core.enqueue=original_enqueue;core.youtube.listing=original_listing;core.targets=original_targets
     playlists=plex_playlists.sync(working,cfg,secrets,core,dry_run=True) if shadow else {'status':'scheduled'}
     proposed=[dict(r) for r in working.execute('SELECT * FROM assets') if r['key'] not in before]
     baseline=core.meta_get(db,'migration_media_manifest',before_manifest)

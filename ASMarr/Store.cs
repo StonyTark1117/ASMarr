@@ -125,6 +125,32 @@ public sealed class Store
         Execute("INSERT INTO commands(id,name,arguments,state,created) VALUES($id,$name,$args,'queued',$at)",("id",id),("name",name),("args",JsonSerializer.Serialize(arguments)),("at",DateTimeOffset.UtcNow.ToString("O")));
         return id;
     }
+    public void InterruptRunningVideoBackfills()
+    {
+        var now=DateTimeOffset.UtcNow.ToString("O");
+        Execute("UPDATE backfill_jobs SET state='interrupted',updated=$now,error='Service restarted during history scan' WHERE media_kind='Video' AND state='running'",("now",now));
+    }
+    public int EnqueueResumableVideoBackfills(TimeSpan failedRetryDelay)
+    {
+        var cutoff=DateTimeOffset.UtcNow.Subtract(failedRetryDelay).ToString("O");
+        int queued=0;
+        foreach(var job in Query("""
+            SELECT b.creator_id FROM backfill_jobs b JOIN creators c ON c.id=b.creator_id
+            WHERE b.media_kind='Video' AND c.monitor_video=1
+              AND (b.state='interrupted' OR (b.state='failed' AND b.updated<=$cutoff))
+            ORDER BY b.updated
+            """,("cutoff",cutoff)))
+        {
+            int creatorId=Convert.ToInt32(job["creator_id"]);
+            if(Query("""
+                SELECT id FROM commands WHERE name='video-backfill' AND state IN ('queued','running')
+                  AND CAST(json_extract(arguments,'$.creatorId') AS INTEGER)=$creator
+                LIMIT 1
+                """,("creator",creatorId)).Count>0)continue;
+            Enqueue("video-backfill",new {creatorId});queued++;
+        }
+        return queued;
+    }
     public string Backup()
     {
         string path=System.IO.Path.Combine(Root,"backups",$"asmarr-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}.db");

@@ -24,6 +24,17 @@ COMPATIBLE_VIDEO = {'h264', 'hevc', 'av1', 'vp9'}
 COMPATIBLE_AUDIO = {'aac', 'ac3', 'eac3', 'mp3', 'opus', 'vorbis', 'flac'}
 
 
+class VideoUnavailable(ValueError):
+    """A permanent source condition that must not enter the retry loop."""
+
+
+TERMINAL_DOWNLOAD_MARKERS = (
+    'video unavailable', 'private video', 'has been removed',
+    'this video is not available', 'members-only', 'members only',
+    'age-restricted', 'age restricted', 'unsupported url',
+)
+
+
 def canonical_url(url):
     p = urlparse(url)
     host = (p.hostname or '').lower()
@@ -55,8 +66,16 @@ def provider_identity(provider, url, post=None):
 
 def fingerprint(provider_id, normalized_url, details=None):
     details = details or {}
-    stable = details.get('duration') or details.get('filesize') or ''
-    return hashlib.sha256(f'{provider_id}|{normalized_url}|{stable}'.encode()).hexdigest()
+    supplied = details.get('media_fingerprint') or details.get('fingerprint') or details.get('sha256')
+    if supplied:
+        return str(supplied).casefold()
+    # Size plus duration is sufficiently specific for discovery-time mirror
+    # detection. A duration alone is not: many unrelated videos share it.
+    if details.get('filesize') and details.get('duration') is not None:
+        dimensions = f"{details.get('width') or ''}x{details.get('height') or ''}"
+        stable = f"{details['filesize']}|{details['duration']}|{dimensions}"
+        return hashlib.sha256(stable.encode()).hexdigest()
+    return hashlib.sha256(f'{provider_id}|{normalized_url}'.encode()).hexdigest()
 
 
 def profile_limit(profile):
@@ -192,6 +211,64 @@ def _recording(db, core, sid, source, creator, title, url, published):
     return core.lookup(db, sid)['key']
 
 
+def _job_cursor(row):
+    if not row or not row['cursor']:
+        return {'phase': 'known', 'index': 0}
+    try:
+        value = json.loads(row['cursor'])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {'phase': 'known', 'index': 0}
+    return value if isinstance(value, dict) else {'phase': 'known', 'index': 0}
+
+
+def _backfill_checkpoint(db, job_id, discovered, eligible, total, cursor):
+    updated = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    db.execute('''UPDATE backfill_jobs SET discovered=?,eligible=?,total=?,cursor=?,updated=?
+                  WHERE id=?''',
+               (discovered, eligible, total, json.dumps(cursor), updated, job_id))
+    db.commit()
+
+
+def _video_monitoring_enabled(db, creator_id):
+    row = db.execute('SELECT monitor_video FROM creators WHERE id=?', (creator_id,)).fetchone()
+    return bool(row and row[0])
+
+
+def _reddit_video_duration(post):
+    crossposts = post.get('crosspost_parent_list') or []
+    original = crossposts[0] if crossposts else post
+    media = (original.get('secure_media') or original.get('media') or {}).get('reddit_video') or {}
+    value = media.get('duration')
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def reddit_video_targets(post, minimum_duration=180):
+    """Return automatic video targets from an approved Reddit post."""
+    if post.get('over_18'):
+        return []
+    urls = [post.get('url_overridden_by_dest') or post.get('url', '')]
+    urls += re.findall(r'https?://[^\s<>()]+', post.get('selftext', '') or '')
+    result = []
+    for url in urls:
+        host = (urlparse(url).hostname or '').lower()
+        provider = ('youtube' if host in {'youtube.com', 'www.youtube.com', 'youtu.be',
+                                          'm.youtube.com', 'music.youtube.com'} else
+                    'reddit' if host == 'v.redd.it' else None)
+        if not provider:
+            continue
+        duration = _reddit_video_duration(post) if provider == 'reddit' else None
+        if duration is not None and duration < float(minimum_duration):
+            continue
+        normalized = canonical_url(url)
+        item = (provider, normalized)
+        if item not in result:
+            result.append(item)
+    return result
+
+
 def backfill(db, cfg, secrets, args, core):
     creator_id = int(args['creatorId'])
     creator = db.execute('SELECT * FROM creators WHERE id=?', (creator_id,)).fetchone()
@@ -199,16 +276,35 @@ def backfill(db, cfg, secrets, args, core):
         raise ValueError('creator_not_found')
     job = db.execute("SELECT * FROM backfill_jobs WHERE creator_id=? AND media_kind='Video' ORDER BY started DESC LIMIT 1",
                      (creator_id,)).fetchone()
-    job_id = job['id'] if job and job['state'] in {'queued', 'running', 'interrupted', 'failed'} else hashlib.sha256(f'{creator_id}:Video'.encode()).hexdigest()[:24]
+    resumable = bool(job and job['state'] in {'queued', 'running', 'interrupted', 'failed', 'cancelled'}
+                     and job['cursor'])
+    job_id = job['id'] if resumable else hashlib.sha256(f'{creator_id}:Video'.encode()).hexdigest()[:24]
     now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     db.execute('''INSERT INTO backfill_jobs(id,creator_id,media_kind,state,started,updated)
-                  VALUES (?,?,'Video','running',?,?) ON CONFLICT(id) DO UPDATE SET state='running',updated=excluded.updated,error=NULL''',
-               (job_id, creator_id, now, now)); db.commit()
-    discovered = eligible = total = 0
+                  VALUES (?,?,'Video','running',?,?) ON CONFLICT(id) DO UPDATE SET
+                  state='running',updated=excluded.updated,finished=NULL,error=NULL,
+                  discovered=CASE WHEN ? THEN backfill_jobs.discovered ELSE 0 END,
+                  eligible=CASE WHEN ? THEN backfill_jobs.eligible ELSE 0 END,
+                  total=CASE WHEN ? THEN backfill_jobs.total ELSE 0 END,
+                  cursor=CASE WHEN ? THEN backfill_jobs.cursor ELSE NULL END''',
+               (job_id, creator_id, now, now, int(resumable), int(resumable),
+                int(resumable), int(resumable)))
+    db.commit()
+    job = db.execute('SELECT * FROM backfill_jobs WHERE id=?', (job_id,)).fetchone()
+    discovered = int(job['discovered'] or 0)
+    eligible = int(job['eligible'] or 0)
+    total = int(job['total'] or 0)
+    cursor = _job_cursor(job)
+    if not resumable:
+        cursor = {'phase': 'known', 'index': 0}
+        _backfill_checkpoint(db, job_id, discovered, eligible, total, cursor)
     try:
         # First convert all already-known provider links without repeating discovery.
-        for asset in db.execute('SELECT * FROM assets WHERE creator=? ORDER BY published', (creator['name'],)).fetchall():
-            if not db.execute('SELECT monitor_video FROM creators WHERE id=?', (creator_id,)).fetchone()[0]:
+        assets = db.execute('SELECT * FROM assets WHERE creator=? ORDER BY published,key',
+                            (creator['name'],)).fetchall()
+        known_index = int(cursor.get('index', 0)) if cursor.get('phase') == 'known' else len(assets)
+        for index, asset in enumerate(assets[known_index:], start=known_index):
+            if not _video_monitoring_enabled(db, creator_id):
                 raise InterruptedError('video_monitoring_disabled')
             for kind, url in json.loads(asset['targets'] or '[]'):
                 provider = 'youtube' if kind == 'youtube' else 'reddit' if urlparse(url).hostname in {'v.redd.it'} else None
@@ -217,41 +313,60 @@ def backfill(db, cfg, secrets, args, core):
                     _, added = add_candidate(db, asset['key'], provider, url)
                     eligible += int(added)
             total += 1
+            _backfill_checkpoint(db, job_id, discovered, eligible, total,
+                                 {'phase': 'known', 'index': index + 1})
+        if cursor.get('phase') == 'known':
+            cursor = {'phase': 'youtube', 'channel': 0, 'index': 0}
+            _backfill_checkpoint(db, job_id, discovered, eligible, total, cursor)
         identities = db.execute('SELECT kind,handle FROM identities WHERE creator_id=? AND enabled=1', (creator_id,)).fetchall()
         channels = [r['handle'] for r in identities if r['kind'] == 'youtube']
-        for channel_id in channels:
+        channel_start = int(cursor.get('channel', 0)) if cursor.get('phase') == 'youtube' else len(channels)
+        for channel_index, channel_id in enumerate(channels[channel_start:], start=channel_start):
             channel = {'creator': creator['name'], 'channel_id': channel_id}
             entries = core.youtube.listing(channel, cfg, cfg.get('video_history_limit', 10000))
-            for entry in entries:
-                if not db.execute('SELECT monitor_video FROM creators WHERE id=?', (creator_id,)).fetchone()[0]:
+            entry_start = int(cursor.get('index', 0)) if (cursor.get('phase') == 'youtube'
+                                                            and channel_index == channel_start) else 0
+            for entry_index, entry in enumerate(entries[entry_start:], start=entry_start):
+                if not _video_monitoring_enabled(db, creator_id):
                     raise InterruptedError('video_monitoring_disabled')
                 discovered += 1
                 ok, _ = core.youtube.eligibility(entry, cfg)
-                if not ok:
-                    continue
-                ok, _ = core.title_passes(entry['title'], cfg, trusted=True,
-                                           topic_pattern=core.youtube.TOPIC_PATTERN)
-                if not ok:
-                    continue
-                url = 'https://www.youtube.com/watch?v=' + entry['id']
-                key = _recording(db, core, 'youtube:' + entry['id'], 'youtube:' + channel_id,
-                                 creator['name'], entry['title'], url, core.youtube.published(entry))
-                _, added = add_candidate(db, key, 'youtube', url, details=entry)
-                eligible += int(added); total += 1
-                if total % 25 == 0:
-                    db.execute('UPDATE backfill_jobs SET discovered=?,eligible=?,total=?,updated=? WHERE id=?',
-                               (discovered, eligible, total, now, job_id)); db.commit()
+                if ok:
+                    ok, _ = core.title_passes(entry['title'], cfg, trusted=True,
+                                              topic_pattern=core.youtube.TOPIC_PATTERN)
+                if ok:
+                    url = 'https://www.youtube.com/watch?v=' + entry['id']
+                    key = _recording(db, core, 'youtube:' + entry['id'], 'youtube:' + channel_id,
+                                     creator['name'], entry['title'], url, core.youtube.published(entry))
+                    _, added = add_candidate(db, key, 'youtube', url, details=entry)
+                    eligible += int(added)
+                total += 1
+                _backfill_checkpoint(db, job_id, discovered, eligible, total,
+                                     {'phase': 'youtube', 'channel': channel_index,
+                                      'index': entry_index + 1})
+            cursor = {'phase': 'youtube', 'channel': channel_index + 1, 'index': 0}
+            _backfill_checkpoint(db, job_id, discovered, eligible, total, cursor)
+        if cursor.get('phase') == 'youtube':
+            cursor = {'phase': 'reddit', 'subreddit': 0, 'page': 0, 'after': None}
+            _backfill_checkpoint(db, job_id, discovered, eligible, total, cursor)
         # Reddit account history is read from configured subreddit feeds and is
         # paged until exhausted. Outbound YouTube links share provider IDs with the
         # channel path, so cross-posts cannot create a second transfer.
         reddit_handles = {r['handle'].casefold() for r in identities if r['kind'] == 'reddit'}
         if reddit_handles:
             reddit = core.Reddit(core.HTTP(), secrets.get('reddit', {}))
-            for sub in cfg.get('subreddits', []):
-                after = None
-                for _ in range(cfg.get('video_reddit_history_pages', 100)):
+            subreddits = cfg.get('subreddits', [])
+            subreddit_start = int(cursor.get('subreddit', 0)) if cursor.get('phase') == 'reddit' else len(subreddits)
+            for subreddit_index, sub in enumerate(subreddits[subreddit_start:], start=subreddit_start):
+                after = cursor.get('after') if subreddit_index == subreddit_start else None
+                page_start = int(cursor.get('page', 0)) if subreddit_index == subreddit_start else 0
+                for page_index in range(page_start, cfg.get('video_reddit_history_pages', 100)):
+                    if not _video_monitoring_enabled(db, creator_id):
+                        raise InterruptedError('video_monitoring_disabled')
                     posts, after = reddit.page(sub, after)
                     for post in posts:
+                        if not _video_monitoring_enabled(db, creator_id):
+                            raise InterruptedError('video_monitoring_disabled')
                         if post.get('author', '').casefold() not in reddit_handles:
                             continue
                         discovered += 1
@@ -260,34 +375,35 @@ def backfill(db, cfg, secrets, args, core):
                         ok, _ = core.title_passes(post.get('title', ''), cfg)
                         if not ok:
                             continue
-                        urls = [post.get('url_overridden_by_dest') or post.get('url', '')]
-                        urls += re.findall(r'https?://[^\s<>()]+', post.get('selftext', '') or '')
-                        for url in urls:
-                            host = (urlparse(url).hostname or '').lower()
-                            provider = 'youtube' if host in {'youtube.com','www.youtube.com','youtu.be','m.youtube.com'} else 'reddit' if host == 'v.redd.it' else None
-                            if not provider:
-                                continue
-                            pid, normalized = provider_identity(provider, url, post)
+                        for provider, normalized in reddit_video_targets(
+                                post, cfg.get('youtube_min_duration_seconds', 180)):
                             key = _recording(db, core, 'reddit:' + post['id'], 'reddit:' + sub,
                                              creator['name'], post.get('title', ''), normalized,
                                              int(post.get('created_utc', 0)))
                             _, added = add_candidate(db, key, provider, normalized, post=post)
                             eligible += int(added); total += 1
+                    next_cursor = ({'phase': 'reddit', 'subreddit': subreddit_index,
+                                    'page': page_index + 1, 'after': after} if after else
+                                   {'phase': 'reddit', 'subreddit': subreddit_index + 1,
+                                    'page': 0, 'after': None})
+                    _backfill_checkpoint(db, job_id, discovered, eligible, total, next_cursor)
                     if not after:
                         break
         finished = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-        db.execute("UPDATE backfill_jobs SET state='completed',discovered=?,eligible=?,total=?,updated=?,finished=? WHERE id=?",
+        db.execute("UPDATE backfill_jobs SET state='completed',discovered=?,eligible=?,total=?,cursor=NULL,updated=?,finished=?,error=NULL WHERE id=?",
                    (discovered, eligible, total, finished, finished, job_id)); db.commit()
         return {'id': job_id, 'state': 'completed', 'discovered': discovered,
                 'eligible': eligible, 'total': total}
     except InterruptedError as exc:
+        finished = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         db.execute("UPDATE backfill_jobs SET state='cancelled',updated=?,finished=?,error=? WHERE id=?",
-                   (now, now, str(exc), job_id)); db.commit()
+                   (finished, finished, str(exc), job_id)); db.commit()
         return {'id': job_id, 'state': 'cancelled', 'discovered': discovered,
                 'eligible': eligible, 'total': total}
     except Exception as exc:
+        failed = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         db.execute("UPDATE backfill_jobs SET state='failed',updated=?,error=? WHERE id=?",
-                   (now, type(exc).__name__, job_id)); db.commit()
+                   (failed, type(exc).__name__, job_id)); db.commit()
         raise
 
 
@@ -338,6 +454,9 @@ def import_video(db, cfg, key, source, candidate, audio_importer=None, artwork=N
     if not source.is_relative_to(download_root) or source.suffix.lower() not in VIDEO_EXTENSIONS:
         raise ValueError('video_import_path_invalid')
     info = probe(source)
+    minimum_duration = float(cfg.get('youtube_min_duration_seconds', 0))
+    if float(info.get('format', {}).get('duration') or 0) < minimum_duration:
+        raise VideoUnavailable('video_below_minimum_duration')
     asset = db.execute('SELECT * FROM assets WHERE key=?', (key,)).fetchone()
     if not asset:
         raise ValueError('recording_not_found')
@@ -432,6 +551,9 @@ def download_video(db, cfg, key, candidate, audio_importer=None):
                    '-o', str(output), candidate['url']]
         p = subprocess.run(command, capture_output=True, text=True, timeout=7200)
         if p.returncode or not p.stdout.strip():
+            message = (p.stderr or '').casefold()
+            if any(marker in message for marker in TERMINAL_DOWNLOAD_MARKERS):
+                raise VideoUnavailable('video_source_unavailable')
             raise ValueError('video_download_failed')
         downloaded = Path(p.stdout.strip().splitlines()[-1]).resolve()
         if not downloaded.is_relative_to(Path(work).resolve()) or downloaded.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -475,6 +597,13 @@ def process_queue(db, cfg, audio_importer=None):
         with db: db.execute("UPDATE media_assets SET state='downloading',error=NULL WHERE recording_key=? AND media_kind='Video'", (row['recording_key'],))
         try:
             results.append(dict(download_video(db, cfg, row['recording_key'], candidate, audio_importer), key=row['recording_key']))
+        except VideoUnavailable as exc:
+            reason = str(exc)
+            with db:
+                db.execute("UPDATE media_assets SET state='unavailable',error=?,retry_after=0 WHERE recording_key=? AND media_kind='Video'",
+                           (reason, row['recording_key']))
+            results.append({'key': row['recording_key'], 'status': 'unavailable',
+                            'error': reason})
         except Exception as exc:
             attempts = int(row['attempts']) + 1
             retry = int(time.time()) + min(86400, 300 * 2 ** min(attempts, 8))
