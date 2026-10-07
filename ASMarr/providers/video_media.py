@@ -17,6 +17,7 @@ import requests
 
 
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.webm', '.mov', '.m4v'}
+ARTWORK_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
 RESOLUTIONS = {'Any': None, '2160p': 2160, '1440p': 1440, '1080p': 1080,
                '720p': 720, '480p': 480}
 COMPATIBLE_VIDEO = {'h264', 'hevc', 'av1', 'vp9'}
@@ -292,7 +293,41 @@ def _nearest_existing(path):
     return path
 
 
-def import_video(db, cfg, key, source, candidate, audio_importer=None):
+def _copy_atomic(source, destination, validator, mismatch_error):
+    source, destination = Path(source), Path(destination)
+    partial = destination.with_name(destination.name + '.asmarr-part')
+    expected = _digest(source)
+    if destination.exists():
+        if _digest(destination) != expected:
+            raise ValueError(mismatch_error)
+        return expected, False
+    try:
+        with source.open('rb') as src, partial.open('wb') as dst:
+            shutil.copyfileobj(src, dst); dst.flush(); os.fsync(dst.fileno())
+        if _digest(partial) != expected:
+            raise ValueError(mismatch_error)
+        validator(partial); partial.chmod(0o644); os.link(partial, destination); partial.unlink()
+        return expected, True
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def _validate_artwork(path):
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ValueError('video_artwork_invalid')
+    result = subprocess.run(['ffprobe', '-v', 'error', '-f', 'image2', '-select_streams', 'v:0',
+                             '-show_entries', 'stream=codec_name', '-of', 'json', str(path)],
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise ValueError('video_artwork_invalid')
+    streams = json.loads(result.stdout).get('streams', [])
+    if not streams or streams[0].get('codec_name') not in {'mjpeg', 'png', 'webp'}:
+        raise ValueError('video_artwork_invalid')
+
+
+def import_video(db, cfg, key, source, candidate, audio_importer=None, artwork=None):
     source = Path(source).resolve()
     download_root = Path(cfg.get('download_root', '/mnt/downloads/asmarr')).resolve()
     if not source.is_relative_to(download_root) or source.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -304,20 +339,20 @@ def import_video(db, cfg, key, source, candidate, audio_importer=None):
     root = Path(cfg['video_root']).resolve()
     destination = video_name(asset, candidate, source.suffix, root)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    partial = destination.with_name(destination.name + '.asmarr-part')
-    expected = _digest(source)
-    if destination.exists():
-        if _digest(destination) != expected:
-            raise ValueError('video_import_destination_conflict')
-    else:
+    expected, video_created = _copy_atomic(source, destination, probe, 'video_import_destination_conflict')
+    artwork_destination = None
+    if artwork:
+        artwork = Path(artwork).resolve()
+        if (not artwork.is_relative_to(download_root)
+                or artwork.suffix.lower() not in ARTWORK_EXTENSIONS):
+            if video_created: destination.unlink(missing_ok=True)
+            raise ValueError('video_artwork_path_invalid')
+        artwork_destination = destination.with_suffix(artwork.suffix.lower().replace('.jpeg', '.jpg'))
         try:
-            with source.open('rb') as src, partial.open('wb') as dst:
-                shutil.copyfileobj(src, dst); dst.flush(); os.fsync(dst.fileno())
-            if _digest(partial) != expected:
-                raise ValueError('video_import_hash_mismatch')
-            probe(partial); partial.chmod(0o644); os.link(partial, destination); partial.unlink()
+            _copy_atomic(artwork, artwork_destination, _validate_artwork,
+                         'video_artwork_destination_conflict')
         except Exception:
-            if partial.exists(): partial.unlink()
+            if video_created: destination.unlink(missing_ok=True)
             raise
     now = int(time.time())
     with db:
@@ -341,6 +376,7 @@ def import_video(db, cfg, key, source, candidate, audio_importer=None):
             finally:
                 extracted.unlink(missing_ok=True)
     return {'status': 'imported', 'path': str(destination), 'sha256': expected,
+            'artworkPath': str(artwork_destination) if artwork_destination else None,
             'hasAudio': has_audio, 'derivedAudio': derived}
 
 
@@ -368,6 +404,7 @@ def download_video(db, cfg, key, candidate, audio_importer=None):
         output = Path(work) / 'video.%(ext)s'
         command = [cfg.get('youtube_binary', '/usr/local/bin/yt-dlp'), '--ignore-config', '--no-playlist',
                    '--no-progress', '--no-simulate', '--socket-timeout', '20', '--retries', '2',
+                   '--write-thumbnail', '--convert-thumbnails', 'jpg',
                    '-f', 'bestvideo*+bestaudio/best', '--print', 'after_move:filepath', '-o', str(output), candidate['url']]
         p = subprocess.run(command, capture_output=True, text=True, timeout=7200)
         if p.returncode or not p.stdout.strip():
@@ -375,7 +412,9 @@ def download_video(db, cfg, key, candidate, audio_importer=None):
         downloaded = Path(p.stdout.strip().splitlines()[-1]).resolve()
         if not downloaded.is_relative_to(Path(work).resolve()) or downloaded.suffix.lower() not in VIDEO_EXTENSIONS:
             raise ValueError('video_download_output_invalid')
-        return import_video(db, cfg, key, downloaded, candidate, audio_importer)
+        artwork = next((path for path in Path(work).glob('video.*')
+                        if path.suffix.lower() in ARTWORK_EXTENSIONS), None)
+        return import_video(db, cfg, key, downloaded, candidate, audio_importer, artwork)
 
 
 def process_queue(db, cfg, audio_importer=None):

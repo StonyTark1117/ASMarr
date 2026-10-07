@@ -52,6 +52,12 @@ class VideoTests(unittest.TestCase):
         subprocess.run(command, check=True)
         return path
 
+    def artwork_file(self, name='source.jpg'):
+        path = self.downloads / name
+        subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=black:s=320x180',
+                        '-frames:v','1','-y',str(path)], check=True)
+        return path
+
     def test_provider_ids_deduplicate_youtube_urls_and_reddit_crossposts(self):
         v.add_candidate(self.db, 'recording', 'youtube', 'https://youtu.be/abcdefghijk?t=2')
         _, added = v.add_candidate(self.db, 'recording', 'youtube', 'https://www.youtube.com/watch?v=abcdefghijk&list=x')
@@ -87,6 +93,23 @@ class VideoTests(unittest.TestCase):
         result = v.import_video(self.db, self.cfg, 'recording', source,
                                 {'provider':'youtube','provider_id':'abcdefghijk'}, importer)
         self.assertTrue(result['hasAudio']); self.assertEqual(calls, [('recording','.m4a')])
+
+    def test_compatible_artwork_is_stored_with_matching_basename(self):
+        source, artwork = self.video_file(), self.artwork_file()
+        result = v.import_video(self.db, self.cfg, 'recording', source,
+                                {'provider':'youtube','provider_id':'abcdefghijk'}, artwork=artwork)
+        saved, saved_artwork = Path(result['path']), Path(result['artworkPath'])
+        self.assertTrue(saved_artwork.is_file())
+        self.assertEqual(saved.with_suffix(''), saved_artwork.with_suffix(''))
+
+    def test_invalid_artwork_rolls_back_new_video(self):
+        source, artwork = self.video_file(), self.downloads / 'invalid.jpg'
+        artwork.write_bytes(b'not an image')
+        with self.assertRaisesRegex(ValueError, 'artwork_invalid'):
+            v.import_video(self.db, self.cfg, 'recording', source,
+                           {'provider':'youtube','provider_id':'abcdefghijk'}, artwork=artwork)
+        self.assertFalse(list(self.video.rglob('*.mp4')))
+        self.assertFalse(list(self.video.rglob('*.asmarr-part')))
 
     def test_atomic_import_cleans_partial_on_interruption(self):
         source = self.video_file()
