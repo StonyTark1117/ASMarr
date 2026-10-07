@@ -5,7 +5,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import bridge as b
 import video_media as v
@@ -142,6 +142,49 @@ class VideoTests(unittest.TestCase):
         with patch.object(v, 'download_video') as download:
             result = v.process_queue(self.db, self.cfg)
         download.assert_not_called(); self.assertEqual(result['jobs'][0]['status'], 'unavailable')
+
+    def plex_response(self, body):
+        response = Mock()
+        response.text = body
+        response.raise_for_status.return_value = None
+        return response
+
+    def test_plex_accepts_only_dedicated_other_videos_library(self):
+        self.cfg['plex'] = {'url':'http://plex:32400','video':{'section_id':9}}
+        sections = ('<MediaContainer><Directory key="9" type="movie" '
+                    'agent="com.plexapp.agents.none" scanner="Plex Video Files Scanner" '
+                    'title="ASMarr Videos"/></MediaContainer>')
+        location = (f'<MediaContainer><Directory><Location path="{self.video}"/>'
+                    '</Directory></MediaContainer>')
+        with patch.object(v.requests, 'get', side_effect=[self.plex_response(sections),
+                                                         self.plex_response(location)]):
+            result = v.plex_library_validation(self.cfg, {'plex_token':'secret'})
+        self.assertEqual(result['type'], 'Other Videos')
+        self.assertEqual(result['sectionId'], 9)
+
+    def test_plex_rejects_movie_tv_audio_and_overlapping_bindings(self):
+        self.cfg['plex'] = {'url':'http://plex:32400','video':{'section_id':9}}
+        invalid = [
+            '<Directory key="9" type="movie" agent="tv.plex.agents.movie" scanner="Plex Movie"/>',
+            '<Directory key="9" type="show" agent="tv.plex.agents.series" scanner="Plex TV Series"/>',
+            '<Directory key="9" type="artist" agent="tv.plex.agents.music" scanner="Plex Music"/>',
+        ]
+        for section in invalid:
+            with self.subTest(section=section), patch.object(
+                    v.requests, 'get', return_value=self.plex_response(
+                        '<MediaContainer>' + section + '</MediaContainer>')):
+                with self.assertRaisesRegex(ValueError, 'must_be_other_videos'):
+                    v.plex_library_validation(self.cfg, {'plex_token':'secret'})
+        common_parent = self.root
+        valid_section = ('<MediaContainer><Directory key="9" type="movie" '
+                         'agent="com.plexapp.agents.none" scanner="Plex Video Files Scanner"/>'
+                         '</MediaContainer>')
+        overlapping = (f'<MediaContainer><Directory><Location path="{common_parent}"/>'
+                       '</Directory></MediaContainer>')
+        with patch.object(v.requests, 'get', side_effect=[self.plex_response(valid_section),
+                                                         self.plex_response(overlapping)]):
+            with self.assertRaisesRegex(ValueError, 'libraries_overlap'):
+                v.plex_library_validation(self.cfg, {'plex_token':'secret'})
 
 
 if __name__ == '__main__': unittest.main()
