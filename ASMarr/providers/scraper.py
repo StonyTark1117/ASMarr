@@ -422,6 +422,7 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
     allow = {a.casefold() for a in cfg.get('allowlist', [])}
     def accept(report, sid, creator, title, options, published=0, haystack=None,
                trusted=False, topic_pattern=None):
+        creator = cfg.get('_identity_creators', {}).get(report['name'].split(':')[0]+':'+creator.casefold(), cfg.get('creator_aliases', {}).get(creator, creator))
         rules = cfg.get('_profile_rules', lambda creator: cfg)(creator)
         ok, reason = title_passes(haystack or title, rules, trusted, topic_pattern)
         if not ok:
@@ -431,7 +432,6 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
         if not options:
             report['rejected']['no_supported_target'] += 1
             return
-        creator = cfg.get('creator_aliases', {}).get(creator, creator)
         result = enqueue(db, sid, report['name'], creator, title, options, published)
         report['items'][result] += 1
     def report(name):

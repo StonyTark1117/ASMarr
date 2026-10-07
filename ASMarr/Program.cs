@@ -72,6 +72,10 @@ app.MapPost("/api/v1/auth/login",async(HttpContext context,Login input)=> {
     return Results.Ok(new {username="admin"});
 }).RequireRateLimiting("login");
 var api=app.MapGroup("/api/v1").RequireAuthorization();
+api.MapPost("/creators",(NewCreator creator)=> {
+    var result=CreatorRegistration.Create(store,creator);
+    return result.Error is null?Results.Created("/api/v1/creators/"+result.Id,new{id=result.Id}):Results.BadRequest(new{error=result.Error});
+});
 api.MapGet("/auth",(HttpContext c)=>new {username=c.User.Identity!.Name});
 api.MapPost("/auth/logout",async(HttpContext c)=>{await c.SignOutAsync();return Results.NoContent();});
 api.MapPost("/auth/password",async(PasswordChange p)=> {
@@ -101,8 +105,8 @@ api.MapPut("/creators/{id:int}",(int id,CreatorEdit c)=> {
 api.MapPost("/creators/mass-edit",(MassEdit m)=> {var error=CreatorBatch.Apply(store,m);return error is null?Results.Ok(new{updated=m.Ids.Distinct().Count()}):Results.BadRequest(new{error});});
 api.MapGet("/identities",()=>store.Query("SELECT i.*,c.name AS creator FROM identities i JOIN creators c ON c.id=i.creator_id ORDER BY c.name,i.kind"));
 api.MapPost("/identities",(IdentityEdit i)=> {
-    if(i.Kind is not ("reddit" or "soundgasm" or "youtube")||i.Handle.Length>100||!System.Text.RegularExpressions.Regex.IsMatch(i.Handle,@"^[\w-]+$"))return Results.BadRequest(new{error="Invalid source identity"});
-    store.Execute("INSERT INTO identities(creator_id,kind,handle,enabled) VALUES($creator,$kind,$handle,$enabled)",("creator",i.CreatorId),("kind",i.Kind),("handle",i.Handle),("enabled",i.Enabled?1:0));return Results.Ok();
+    var result=CreatorRegistration.Link(store,i.CreatorId,new(i.Kind,i.Handle,i.Enabled));
+    return result.Error is null?Results.Created("/api/v1/identities/"+result.Id,new{id=result.Id}):Results.BadRequest(new{error=result.Error});
 });
 api.MapPut("/identities/{id:int}",(int id,JsonElement j)=>{store.Execute("UPDATE identities SET enabled=$enabled WHERE id=$id",("id",id),("enabled",j.GetProperty("enabled").GetBoolean()?1:0));return Results.Ok();});
 api.MapGet("/recordings",(string? creator,string? state,string? q,int? limit,int? offset)=>store.Query("SELECT a.*,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Audio') AS audio_state,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Video') AS video_state FROM assets a WHERE ($creator IS NULL OR creator=$creator) AND ($state IS NULL OR state=$state OR EXISTS(SELECT 1 FROM media_assets m WHERE m.recording_key=a.key AND m.state=$state)) AND ($q IS NULL OR title LIKE '%'||$q||'%' OR creator LIKE '%'||$q||'%') ORDER BY COALESCE(published,acquired,0) DESC LIMIT $limit OFFSET $offset",("creator",creator),("state",state),("q",q),("limit",Math.Clamp(limit??200,1,1000)),("offset",Math.Max(0,offset??0))));

@@ -133,6 +133,7 @@ function App() {
     [form, setForm] = useState(""),
     [sourcePanel, setSourcePanel] = useState<Row | null>(null),
     [sourceForm, setSourceForm] = useState(""),
+    [addingCreator, setAddingCreator] = useState(false),
     [integration, setIntegration] = useState("prowlarr");
   useEffect(() => {
     api("auth")
@@ -1043,6 +1044,122 @@ function App() {
             </>
           ) : page === "Creators" ? (
             <>
+              <button onClick={() => setAddingCreator(!addingCreator)}>
+                <Plus size={15} /> Add creator
+              </button>
+              {addingCreator && (
+                <section className="panel">
+                  <h2>Add a creator</h2>
+                  <form
+                    className="inline-form"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const values = new FormData(e.currentTarget);
+                      const split = (key: string) =>
+                        String(values.get(key) || "")
+                          .split(",")
+                          .map((x) => x.trim())
+                          .filter(Boolean);
+                      const handle = String(values.get("handle") || "").trim();
+                      if (
+                        await act("creators", "POST", {
+                          name: values.get("name"),
+                          profileId: Number(values.get("profile")),
+                          aliases: split("aliases"),
+                          tags: split("tags"),
+                          monitored: values.get("monitored") === "on",
+                          identities: handle
+                            ? [
+                                {
+                                  kind: values.get("kind"),
+                                  handle,
+                                  enabled: true,
+                                },
+                              ]
+                            : [],
+                        })
+                      ) {
+                        setAddingCreator(false);
+                        notify("Creator added");
+                      }
+                    }}
+                  >
+                    <label>
+                      Name
+                      <input
+                        aria-label="New creator name"
+                        name="name"
+                        maxLength={100}
+                        required
+                      />
+                    </label>
+                    <label>
+                      Aliases
+                      <input
+                        aria-label="New creator aliases"
+                        name="aliases"
+                        placeholder="Comma-separated aliases"
+                      />
+                    </label>
+                    <label>
+                      Tags
+                      <input
+                        aria-label="New creator tags"
+                        name="tags"
+                        placeholder="Comma-separated tags"
+                      />
+                    </label>
+                    <label>
+                      Acquisition profile
+                      <select
+                        aria-label="New creator acquisition profile"
+                        name="profile"
+                        required
+                      >
+                        {audioProfiles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Initial source
+                      <select aria-label="New creator source" name="kind">
+                        <option>soundgasm</option>
+                        <option>reddit</option>
+                        <option>youtube</option>
+                      </select>
+                    </label>
+                    <label>
+                      Account or channel ID
+                      <input
+                        aria-label="New creator source handle"
+                        name="handle"
+                        maxLength={100}
+                      />
+                    </label>
+                    <label>
+                      <input
+                        aria-label="Monitor new creator audio"
+                        name="monitored"
+                        type="checkbox"
+                        defaultChecked
+                      />{" "}
+                      Monitor audio
+                    </label>
+                    <button className="primary" type="submit">
+                      Create creator
+                    </button>
+                  </form>
+                  <p className="muted">
+                    The library path is derived from the configured root. This
+                    creates database records only; no directory, download, or
+                    video backfill is created. Link more identities from the
+                    creator detail page.
+                  </p>
+                </section>
+              )}
               <div className="toolbar">
                 <div className="search">
                   <Search size={17} />

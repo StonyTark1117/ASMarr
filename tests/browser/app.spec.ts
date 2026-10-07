@@ -251,3 +251,26 @@ test("creator profile tags filters and invalid batch rollback", async ({ page, r
   await expect(page.getByRole("button",{name:"Quiet Creator",exact:true})).toBeVisible();
   await expect(page.getByRole("button",{name:"Soft Voice",exact:true})).not.toBeVisible();
 });
+
+test("manual creator onboarding preserves audio-only defaults", async ({page,request}) => {
+  const headers={"X-Api-Key":auth().apiKey};
+  await login(page);
+  await page.getByRole("button",{name:"Creators",exact:true}).click();
+  await page.getByRole("button",{name:"Add creator",exact:true}).click();
+  await page.getByLabel("New creator name").fill("New Sleep Creator");
+  await page.getByLabel("New creator aliases").fill("Sleep Alias");
+  await page.getByLabel("New creator tags").fill("sleep");
+  await page.getByLabel("New creator source",{exact:true}).selectOption("soundgasm");
+  await page.getByLabel("New creator source handle").fill("SleepAccount");
+  await page.getByRole("button",{name:"Create creator",exact:true}).click();
+  await expect(page.getByRole("button",{name:"New Sleep Creator",exact:true})).toBeVisible();
+  const rows=await (await request.get("/api/v1/creators",{headers})).json();
+  const added=rows.find((c:any)=>c.name==="New Sleep Creator");
+  expect(added.monitor_video).toBe(0);
+  expect(JSON.parse(added.aliases)).toEqual(["Sleep Alias"]);
+  const detail=await (await request.get("/api/v1/creators/"+added.id,{headers})).json();
+  expect(detail.identities.map((i:any)=>i.handle)).toEqual(["SleepAccount"]);
+  const denied=await request.post("/api/v1/creators",{headers,data:{name:"../Escape",profileId:1}});
+  expect(denied.status()).toBe(400);
+  expect((await (await request.get("/api/v1/creators",{headers})).json()).length).toBe(rows.length);
+});

@@ -195,6 +195,7 @@ def configured_discovery(db,cfg):
     cfg['soundgasm_creators']=list(unique_handles.values())
     cfg['youtube_channels']=[{'creator':r['name'],'channel_id':r['handle']} for r in identities if r['kind']=='youtube']
     cfg['creator_aliases'].update({r['handle']:r['name'] for r in identities if r['kind']=='reddit'})
+    cfg['_identity_creators']={r['kind']+':'+r['handle'].casefold():r['name'] for r in identities}
     monitored={r['name'] for r in identities}
     cfg['sfw_expansion']['creators']=[c for c in cfg.get('sfw_expansion',{}).get('creators',[]) if c['creator'] in monitored]
     return cfg

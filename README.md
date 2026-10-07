@@ -59,6 +59,13 @@ paths remain in protected server configuration and cannot be set through that
 payload. Source quota remaining is explicitly unknown, not assumed unlimited.
 Changing discovery filters requires reviewing shadow parity again before cutover.
 
+Creators → Add creator creates a monitored audio creator with an acquisition
+profile, aliases, tags, and an optional initial source identity. Further identities
+can be linked from its detail page. Registration is transactional and creates no
+media directories or video backfills. Identity ownership is source-scoped, so
+different Reddit/Soundgasm handles resolve to the same creator and profile without
+cross-source handle collisions.
+
 Acquisition profiles preserve the migrated legacy text policy unless custom
 fields are supplied. Custom fields are `allowedSpeakers` and `allowedAudiences`
 (arrays of `F`, `M`, `NB`, `A`, or `ANY`), `requireSpeakerTag`,

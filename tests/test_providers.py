@@ -13,6 +13,23 @@ from categories import classify
 
 
 class ProviderTests(unittest.TestCase):
+    def test_linked_soundgasm_identity_uses_owning_creator_and_profile(self):
+        with tempfile.TemporaryDirectory() as root:
+            db=s.open_db(Path(root)/'state.db');seen=[]
+            def rules(creator):
+                seen.append(creator)
+                return {'allowedSpeakers':['M'],'allowedAudiences':['F'],'requiredTopics':['nap']}
+            cfg={'soundgasm_creators':['SharedHandle'],'creator_aliases':{'SharedHandle':'Reddit Creator'},
+                 '_identity_creators':{'soundgasm:sharedhandle':'Soundgasm Creator','reddit:sharedhandle':'Reddit Creator'},
+                 '_profile_rules':rules}
+            post={'url':'https://soundgasm.net/u/SharedHandle/Nap','title':'[M4F] Nap','description':''}
+            with patch.object(s,'sg_listing',return_value=[post]):
+                reports=s.discover(db,cfg,{},None,['soundgasm'])
+            self.assertEqual(seen,['Soundgasm Creator'])
+            self.assertEqual(db.execute('SELECT creator FROM assets').fetchone()[0],'Soundgasm Creator')
+            self.assertEqual(reports[0]['accepted'],1)
+            db.close()
+
     def test_normalization_and_exact_creator_boundaries(self):
         self.assertEqual(b.normalize('<b>Creator</b> — Sleep!'),'creator sleep')
         asset={'creator':'Ann','title':'Sleep hypnosis','published':0}
