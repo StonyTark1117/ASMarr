@@ -130,12 +130,15 @@ test("creator monitoring, identity detail and mass editing", async ({
     .toBe("cancelled");
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByLabel("Monitor Videos", { exact: true }).click();
-  await expect.poll(async () => {
-    const creators = await request.get("/api/v1/creators", {
-      headers: { "X-Api-Key": auth().apiKey },
-    });
-    return (await creators.json()).find((c: any) => c.id === 1)?.monitor_video;
-  }).toBe(1);
+  await expect
+    .poll(async () => {
+      const creators = await request.get("/api/v1/creators", {
+        headers: { "X-Api-Key": auth().apiKey },
+      });
+      return (await creators.json()).find((c: any) => c.id === 1)
+        ?.monitor_video;
+    })
+    .toBe(1);
   await expect(
     page.getByLabel("Monitor Videos", { exact: true }),
   ).toBeChecked();
@@ -263,6 +266,47 @@ test("settings source toggle and task execution", async ({ page, request }) => {
       );
     })
     .toBe(true);
+});
+test("dedicated Plex video binding preserves protected integration fields", async ({
+  page,
+  request,
+}) => {
+  const headers = { "X-Api-Key": auth().apiKey };
+  await login(page);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Video", exact: true }).click();
+  const section = page.getByLabel("Plex Other Videos section ID");
+  await expect(section).toHaveValue("9");
+  await section.fill("12");
+  await page
+    .getByRole("button", { name: "Save Plex video binding", exact: true })
+    .click();
+  await expect
+    .poll(async () => {
+      const response = await request.get("/api/v1/video/plex-binding", {
+        headers,
+      });
+      return (await response.json()).sectionId;
+    })
+    .toBe(12);
+  const saved = JSON.parse(
+    readFileSync(config() + "/integrations.json", "utf8"),
+  ).plex;
+  expect(saved.video.section_id).toBe(12);
+  expect(saved.section_id).toBe(4);
+  expect(saved.token).toBe("fixture-secret");
+  const rejected = await request.put("/api/v1/video/plex-binding", {
+    headers,
+    data: { sectionId: 0 },
+  });
+  expect(rejected.status()).toBe(400);
+  expect(
+    (
+      await (
+        await request.get("/api/v1/video/plex-binding", { headers })
+      ).json()
+    ).sectionId,
+  ).toBe(12);
 });
 test("SignalR pushes live command state to queue screen", async ({
   page,

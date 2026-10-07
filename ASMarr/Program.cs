@@ -144,6 +144,33 @@ api.MapPost("/profiles",(ProfileEdit p)=> {
 api.MapPut("/profiles/{id:int}",(int id,ProfileEdit p)=>{var error=ValidateProfile(p.Settings);if(error!=null)return Results.BadRequest(new{error});store.Execute("UPDATE profiles SET name=$name,settings=$settings WHERE id=$id",("id",id),("name",p.Name),("settings",p.Settings.GetRawText()));return Results.Ok();});
 api.MapGet("/video/profiles",()=>store.Query("SELECT * FROM video_quality_profiles ORDER BY id"));
 api.MapPut("/video/profiles/{id:int}",(int id,VideoProfileEdit p)=>{if(p.Resolution is not ("Any" or "2160p" or "1440p" or "1080p" or "720p" or "480p"))return Results.BadRequest(new{error="Unsupported resolution"});store.Execute("UPDATE video_quality_profiles SET name=$name,resolution=$resolution,settings=$settings WHERE id=$id",("id",id),("name",p.Name),("resolution",p.Resolution),("settings",p.Settings.GetRawText()));return Results.Ok();});
+api.MapGet("/video/plex-binding",()=> {
+    int? sectionId=null;string path=System.IO.Path.Combine(store.ConfigRoot,"integrations.json");
+    if(File.Exists(path))
+    {
+        using var document=JsonDocument.Parse(File.ReadAllText(path));
+        if(document.RootElement.TryGetProperty("plex",out var plex)&&plex.ValueKind==JsonValueKind.Object&&
+           plex.TryGetProperty("video",out var video)&&video.ValueKind==JsonValueKind.Object&&
+           video.TryGetProperty("section_id",out var section)&&section.TryGetInt32(out var configured))sectionId=configured;
+    }
+    return new{sectionId};
+});
+api.MapPut("/video/plex-binding",async(VideoPlexBinding binding)=> {
+    if(binding.SectionId is null or <1)return Results.BadRequest(new{error="Select a valid Plex Other Videos section"});
+    string path=System.IO.Path.Combine(store.ConfigRoot,"integrations.json");
+    var data=File.Exists(path)?JsonSerializer.Deserialize<Dictionary<string,JsonElement>>(await File.ReadAllTextAsync(path))!:new();
+    var plex=data.TryGetValue("plex",out var existingPlex)&&existingPlex.ValueKind==JsonValueKind.Object
+        ?existingPlex.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone()):new Dictionary<string,JsonElement>();
+    var video=plex.TryGetValue("video",out var existingVideo)&&existingVideo.ValueKind==JsonValueKind.Object
+        ?existingVideo.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone()):new Dictionary<string,JsonElement>();
+    video["section_id"]=JsonSerializer.SerializeToElement(binding.SectionId.Value);
+    plex["video"]=JsonSerializer.SerializeToElement(video);data["plex"]=JsonSerializer.SerializeToElement(plex);
+    string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";
+    await File.WriteAllTextAsync(temporary,JsonSerializer.Serialize(data));
+    if(!OperatingSystem.IsWindows())File.SetUnixFileMode(temporary,UnixFileMode.UserRead|UnixFileMode.UserWrite);
+    File.Move(temporary,path,true);
+    return Results.Ok(new{sectionId=binding.SectionId.Value});
+});
 api.MapGet("/settings",()=>store.Query("SELECT * FROM settings WHERE key NOT LIKE '%secret%'"));
 api.MapPut("/settings/{key}",(string key,JsonElement j)=> {if(key is not ("naming" or "root" or "video.root" or "video.free_space_gib" or "video.concurrency" or "video.naming"))return Results.BadRequest(new {error="Use the audited cutover procedure to change execution mode"});string value=j.GetProperty("value").GetString()??"";if((key is "root" or "video.root")&&!System.IO.Path.IsPathFullyQualified(value))return Results.BadRequest();if(key=="video.root"&&RootsOverlap(store.Setting("root"),value))return Results.BadRequest(new{error="Audio and video roots may not overlap"});if(key=="root"&&RootsOverlap(value,store.Setting("video.root")))return Results.BadRequest(new{error="Audio and video roots may not overlap"});if(key=="video.free_space_gib"&&(!double.TryParse(value,out var free)||free<0))return Results.BadRequest();if(key=="video.concurrency"&&(!int.TryParse(value,out var concurrency)||concurrency<1||concurrency>4))return Results.BadRequest();store.Set(key,value);return Results.Ok();});
 api.MapGet("/integrations",()=>IntegrationStatus(store));
@@ -198,6 +225,7 @@ record CreatorEdit(bool Monitored,int ProfileId,string[] Tags,bool? MonitorVideo
 record IdentityEdit(int CreatorId,string Kind,string Handle,bool Enabled);
 record ProfileEdit(string Name,JsonElement Settings);
 record VideoProfileEdit(string Name,string Resolution,JsonElement Settings);
+record VideoPlexBinding(int? SectionId);
 record RecordingAction(string Key,string Action,string? Reason,string? MediaKind);
 record CommandInput(string Name,JsonElement Arguments);
 record TaskEdit(bool Enabled,int IntervalSeconds);

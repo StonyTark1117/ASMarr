@@ -124,6 +124,7 @@ function App() {
     [candidates, setCandidates] = useState<Row[] | null>(null),
     [candidateKind, setCandidateKind] = useState("Audio"),
     [videoProfiles, setVideoProfiles] = useState<Row[]>([]),
+    [plexVideoBinding, setPlexVideoBinding] = useState<Row>({}),
     [audioProfiles, setAudioProfiles] = useState<Row[]>([]),
     [creatorFilter, setCreatorFilter] = useState("all"),
     [creatorTag, setCreatorTag] = useState(""),
@@ -230,6 +231,9 @@ function App() {
     if (!auth) return;
     api("video/profiles")
       .then(setVideoProfiles)
+      .catch(() => {});
+    api("video/plex-binding")
+      .then(setPlexVideoBinding)
       .catch(() => {});
     api("profiles")
       .then(setAudioProfiles)
@@ -1918,6 +1922,37 @@ function App() {
                             <button>Save</button>
                           </form>
                         ))}
+                    <form
+                      className="setting-form"
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        const f = new FormData(e.currentTarget);
+                        const saved = await act("video/plex-binding", "PUT", {
+                          sectionId: Number(f.get("sectionId")),
+                        });
+                        if (saved) {
+                          setPlexVideoBinding(saved);
+                          notify("Plex video library binding saved");
+                        }
+                      }}
+                    >
+                      <label>
+                        Plex Other Videos section ID
+                        <input
+                          key={String(plexVideoBinding.sectionId ?? "unset")}
+                          name="sectionId"
+                          type="number"
+                          min={1}
+                          required
+                          defaultValue={plexVideoBinding.sectionId ?? ""}
+                        />
+                      </label>
+                      <button>Save Plex video binding</button>
+                    </form>
+                    <p className="muted">
+                      Create the dedicated library in Plex first. ASMarr stores
+                      only its section ID here and never creates Plex libraries.
+                    </p>
                     <button onClick={() => command("plex-video-verify")}>
                       <Radio size={15} /> Validate dedicated Plex library
                     </button>

@@ -46,7 +46,8 @@ try:
         db.execute("INSERT OR IGNORE INTO sources(name,status,last_success,details) VALUES('soundgasm:Fixture1','healthy',1791400000,'{}')")
     (config/'sources.yaml').write_text('{}\n')
     (config/'source-secrets.json').write_text('{}\n')
-    (config/'sources.yaml').chmod(0o600);(config/'source-secrets.json').chmod(0o600)
+    (config/'integrations.json').write_text(json.dumps({'plex':{'url':'http://plex.invalid:32400','section_id':4,'token':'fixture-secret','video':{'section_id':9}}}))
+    for path in (config/'sources.yaml',config/'source-secrets.json',config/'integrations.json'):path.chmod(0o600)
     (session/'ready').touch()
     process.wait()
 finally:
