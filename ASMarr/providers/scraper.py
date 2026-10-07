@@ -29,6 +29,7 @@ from titles import compact_title
 import youtube_source as youtube
 import sfw_sources
 import plex_playlists
+import acquisition_profiles
 
 UA = 'linux:asmr-scraper:1.0 (personal media library)'
 F4_RE = re.compile(r'\[\s*F4[FMA]+\s*\]', re.I)
@@ -67,13 +68,20 @@ def plain(text):
 
 def title_passes(title, cfg, trusted=False, topic_pattern=None):
     text = plain(title)
-    if M4_RE.search(text):
-        return False, 'male_speaker_tag'
-    if F4F_RE.search(text):
-        return False, 'female_only_audience'
-    if not trusted and not F4_RE.search(text):
-        return False, 'missing_speaker_tag'
-    if topic_pattern is not None:
+    custom_speaker = acquisition_profiles.speaker_decision(text, cfg, trusted)
+    if custom_speaker is not None:
+        if not custom_speaker[0]: return custom_speaker
+    else:
+        if M4_RE.search(text):
+            return False, 'male_speaker_tag'
+        if F4F_RE.search(text):
+            return False, 'female_only_audience'
+        if not trusted and not F4_RE.search(text):
+            return False, 'missing_speaker_tag'
+    custom_topic = acquisition_profiles.topic_decision(text, cfg)
+    if custom_topic is not None:
+        if not custom_topic[0]: return custom_topic
+    elif topic_pattern is not None:
         if not re.search(topic_pattern, text, re.I):
             return False, 'missing_topic'
     elif cfg.get('hypno_required', True):
@@ -89,6 +97,8 @@ def title_passes(title, cfg, trusted=False, topic_pattern=None):
             pattern = r'(?<!\w)' + r'\s+'.join(re.escape(x) for x in variant.split()) + r'(?!\w)'
             if re.search(pattern, text, re.I):
                 return False, 'blocked_term:' + term
+    custom_exclusion = acquisition_profiles.excluded_decision(text, cfg)
+    if not custom_exclusion[0]: return custom_exclusion
     return True, 'accepted'
 
 
@@ -495,6 +505,8 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
             stats = report('youtube:' + channel['channel_id'])
             stats['creator'] = channel['creator']
             try:
+                rules = cfg.get('_profile_rules', lambda creator: cfg)(channel['creator'])
+                rules = acquisition_profiles.discovery_config(cfg, rules)
                 checkpoint_key = 'youtube_seen:' + channel['channel_id']
                 previous = meta_get(db, checkpoint_key)
                 entries = youtube.listing(channel, cfg)
@@ -509,7 +521,7 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
                 deferred = set()
                 for entry in entries:
                     stats['parsed'] += 1
-                    ok, reason = youtube.eligibility(entry, cfg)
+                    ok, reason = youtube.eligibility(entry, rules)
                     # Early-access uploads and scheduled premieres can become
                     # public later. Recheck their eligibility on the next poll.
                     if not ok and reason in {'youtube_not_public', 'youtube_live_or_upcoming'}:
@@ -520,12 +532,12 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
                         stats['items']['previously_seen'] += 1
                         continue
                     if ok:
-                        ok, reason = title_passes(entry['title'], cfg, trusted=True,
+                        ok, reason = title_passes(entry['title'], rules, trusted=True,
                                                  topic_pattern=youtube.TOPIC_PATTERN)
                     if not ok:
                         stats['rejected'][reason] += 1
                         continue
-                    if previous is None and seeded >= cfg.get('youtube_initial_downloads', 3):
+                    if previous is None and seeded >= rules.get('youtube_initial_downloads', 3):
                         stats['items']['older_backlog_not_imported'] += 1
                         continue
                     url = 'https://www.youtube.com/watch?v=' + entry['id']

@@ -52,6 +52,18 @@ REST resources are under `/api/v1`; authenticated OpenAPI is at
 commands. A renewable SQLite lease serializes provider execution across tasks;
 interrupted commands remain visible rather than silently replaying mutations.
 
+Acquisition profiles preserve the migrated legacy text policy unless custom
+fields are supplied. Custom fields are `allowedSpeakers` and `allowedAudiences`
+(arrays of `F`, `M`, `NB`, `A`, or `ANY`), `requireSpeakerTag`,
+`trustedMissingSpeakerTag`, `requiredTopics`, `topicMatch` (`any` or `all`), and
+`excludedTerms`. Topics/exclusions are literal case-insensitive words or phrases,
+not regexes; an explicit empty topic list removes the topic requirement without
+removing speaker or fantasy exclusions. Trusted sources may omit tags but never
+override contradictory explicit tags. `minimumDuration` controls audio validation
+and YouTube duration eligibility; `backlogLimit` controls initial YouTube
+enrollment, not future new uploads. Other sources retain their existing polling
+and SFW qualification safeguards.
+
 ## Rollout requirements
 
 The original implementation plan remains the acceptance scope. In particular:
