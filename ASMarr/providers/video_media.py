@@ -69,7 +69,11 @@ def profile_limit(profile):
 def rank_candidate(candidate, profile):
     height = int(candidate.get('resolution') or candidate.get('height') or 0)
     limit = profile_limit(profile)
-    if limit is not None and height > limit:
+    # YouTube and Reddit manifests are adaptive: a 2160p upload can still
+    # supply a 1080p stream without transcoding. Fixed releases (for example
+    # an interactive indexer result) must be rejected when they exceed the cap.
+    adaptive = candidate.get('provider') in {'youtube', 'reddit'}
+    if limit is not None and height > limit and not adaptive:
         return None
     source = int(candidate.get('source_quality') or candidate.get('sourceQuality') or 0)
     bitrate = int(candidate.get('bitrate') or candidate.get('tbr') or 0)
@@ -77,7 +81,8 @@ def rank_candidate(candidate, profile):
     audio_codec = (candidate.get('audio_codec') or candidate.get('acodec') or '').split('.')[0].lower()
     compatibility = int(video_codec in COMPATIBLE_VIDEO) + int(not audio_codec or audio_codec in COMPATIBLE_AUDIO)
     no_reencode = int(not candidate.get('requires_transcode') and not candidate.get('requiresTranscode'))
-    score = (height, source, bitrate, compatibility, no_reencode)
+    score = (min(height, limit) if limit is not None and height else height,
+             source, bitrate, compatibility, no_reencode)
     return dict(candidate, rank=score)
 
 
@@ -405,7 +410,8 @@ def download_video(db, cfg, key, candidate, audio_importer=None):
         command = [cfg.get('youtube_binary', '/usr/local/bin/yt-dlp'), '--ignore-config', '--no-playlist',
                    '--no-progress', '--no-simulate', '--socket-timeout', '20', '--retries', '2',
                    '--write-thumbnail', '--convert-thumbnails', 'jpg',
-                   '-f', 'bestvideo*+bestaudio/best', '--print', 'after_move:filepath', '-o', str(output), candidate['url']]
+                   '-f', _format_selector(candidate.get('max_height')), '--print', 'after_move:filepath',
+                   '-o', str(output), candidate['url']]
         p = subprocess.run(command, capture_output=True, text=True, timeout=7200)
         if p.returncode or not p.stdout.strip():
             raise ValueError('video_download_failed')
@@ -415,6 +421,15 @@ def download_video(db, cfg, key, candidate, audio_importer=None):
         artwork = next((path for path in Path(work).glob('video.*')
                         if path.suffix.lower() in ARTWORK_EXTENSIONS), None)
         return import_video(db, cfg, key, downloaded, candidate, audio_importer, artwork)
+
+
+def _format_selector(max_height=None):
+    if max_height is None:
+        return 'bestvideo*+bestaudio/best'
+    height = int(max_height)
+    if height not in set(RESOLUTIONS.values()):
+        raise ValueError('unknown_video_resolution')
+    return f'bestvideo*[height<={height}]+bestaudio/best[height<={height}]'
 
 
 def process_queue(db, cfg, audio_importer=None):
@@ -438,6 +453,7 @@ def process_queue(db, cfg, audio_importer=None):
         if not candidate:
             with db: db.execute("UPDATE media_assets SET state='unavailable',error='no_candidate_within_profile' WHERE recording_key=? AND media_kind='Video'", (row['recording_key'],))
             results.append({'key': row['recording_key'], 'status': 'unavailable'}); continue
+        candidate['max_height'] = profile_limit(options)
         with db: db.execute("UPDATE media_assets SET state='downloading',error=NULL WHERE recording_key=? AND media_kind='Video'", (row['recording_key'],))
         try:
             results.append(dict(download_video(db, cfg, row['recording_key'], candidate, audio_importer), key=row['recording_key']))

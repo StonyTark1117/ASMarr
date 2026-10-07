@@ -75,7 +75,14 @@ class VideoTests(unittest.TestCase):
         ]
         self.assertEqual(v.choose_candidate(candidates, {'resolution':'Any'})['resolution'], 2160)
         self.assertEqual(v.choose_candidate(candidates, {'resolution':'1080p'})['resolution'], 1080)
-        self.assertIsNone(v.choose_candidate([candidates[1]], {'resolution':'1080p'}))
+        self.assertIsNone(v.choose_candidate([dict(candidates[1], provider='prowlarr')],
+                                             {'resolution':'1080p'}))
+        adaptive = v.choose_candidate([dict(candidates[1], provider='youtube')],
+                                      {'resolution':'1080p'})
+        self.assertEqual(adaptive['rank'][0], 1080)
+        self.assertEqual(v._format_selector(1080),
+                         'bestvideo*[height<=1080]+bestaudio/best[height<=1080]')
+        self.assertEqual(v._format_selector(), 'bestvideo*+bestaudio/best')
 
     def test_video_only_import_preserves_audio_wanted_and_names_by_date(self):
         source = self.video_file()
