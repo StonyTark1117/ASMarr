@@ -76,5 +76,17 @@ Cutover is not considered complete merely because the application starts or the
 migration succeeds. Current rollout evidence lives in the protected SQLite
 `migration_audits` and `shadow_cycles` tables and in the System screens.
 
+`ops/validate_library.py` performs a read-only ffprobe audit of every migrated
+completed audio file, checking file statistics before and after validation.
+`ops/record_audio_acceptance.py --tested-sha <full-sha> --ci-run <run-id>` records
+that audit together with fresh path, indexing, and playlist verification after
+the specified GitHub run has been independently checked. Its protected
+`acceptance/audio-baseline.json` is historical evidence, **not** cutover approval:
+subsequent application changes must pass the combined regression suite again.
+`ops/cutover.py` defaults to a read-only gate report; `--apply` additionally
+requires three qualified daily observations and explicit `pre-cutover.json`
+test evidence. It leaves scheduling disabled after the bounded cycle until the
+remaining live production acceptance checks pass.
+
 Public packaging, additional media servers/download clients, multi-user accounts,
 and unattended application updates are deferred.
