@@ -120,6 +120,16 @@ including managed DLLs, provider source and compiled UI, not just the .NET
 apphost. A changed tree or mismatched tested commit prevents cutover; generated
 Python caches are excluded.
 
+`ops/runtime_fixtures.py prepare --repository . --commit <deployed-full-sha>
+--output <new-archive>` packages isolated fixtures from immutable Git objects.
+After extracting that archive to a protected scratch directory on CT130, run
+`ops/runtime_fixtures.py verify --fixtures <scratch-directory> --output
+/var/lib/asmarr/acceptance/<new-evidence-file>.json`. It requires matching fixture
+and deployed commits, verifies every fixture Git blob and the deployed artifact
+tree, blocks network connections, and runs six temporary-database outage/recovery
+checks using the installed providers. This is runtime fixture evidence only—not
+a substitute for live direct/fallback canaries or a production repeat cycle.
+
 Cutover captures Plex metadata immediately before production writes and compares
 it after the bounded cycle. The protected snapshots check every existing audio
 rating key, path, playback/rating field, metadata-lock flag, locked value,
