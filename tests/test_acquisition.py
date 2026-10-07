@@ -28,7 +28,7 @@ class AcquisitionTests(unittest.TestCase):
         CREATE TABLE creators(id INTEGER PRIMARY KEY,name TEXT UNIQUE,monitored INTEGER,profile_id INTEGER);
         CREATE TABLE profiles(id INTEGER PRIMARY KEY,settings TEXT);
         CREATE TABLE history(id INTEGER PRIMARY KEY,at TEXT,event TEXT,recording_key TEXT,details TEXT);
-        CREATE TABLE queue(id TEXT PRIMARY KEY,recording_key TEXT,download_id TEXT UNIQUE,state TEXT,provider TEXT,details TEXT,created TEXT);
+        CREATE TABLE queue(id TEXT PRIMARY KEY,recording_key TEXT,download_id TEXT UNIQUE,state TEXT,provider TEXT,details TEXT,created TEXT,media_kind TEXT DEFAULT 'Audio');
         CREATE TABLE blocklist(id INTEGER PRIMARY KEY,recording_key TEXT,download_id TEXT,reason TEXT,created TEXT);''')
         self.db.executemany('INSERT INTO settings VALUES(?,?)',[('mode','production'),('root',str(self.library)),('naming','{Creator}/Singles/{Title} [{SourceId}].{ext}')])
         self.db.execute("INSERT INTO creators VALUES(1,'Creator',1,1)")
@@ -82,11 +82,25 @@ class AcquisitionTests(unittest.TestCase):
             b.process_queue(self.db,self.cfg);grab.assert_not_called()
         self.assertEqual(self.db.execute('SELECT event FROM history').fetchone()[0],'search-review')
     def test_qbittorrent_outage_preserves_job(self):
-        self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date')",(self.key,))
+        self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date','Audio')",(self.key,))
         with patch.object(b,'qbit',side_effect=requests.ConnectionError('offline')),self.assertRaises(requests.ConnectionError):b.monitor_downloads(self.db,self.cfg)
         self.assertEqual(self.db.execute('SELECT state FROM queue').fetchone()[0],'downloading')
+
+    def test_audio_and_video_download_jobs_are_independent(self):
+        self.db.execute("INSERT INTO queue VALUES('audio',?,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','downloading','qbittorrent','{}','date','Audio')",(self.key,))
+        candidate={'guid':'video-fixture','indexerId':7,'magnetUrl':'magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}
+        s.meta_set(self.db,'search_results:Video:'+self.key,[candidate])
+        class Session:
+            def get(self,url,**kwargs):
+                return Response({'asmarr':{}}) if url.endswith('/categories') else Response([])
+            def post(self,*args,**kwargs):return Response(text='Ok.')
+        with patch.object(b,'qbit',return_value=(Session(),'http://fixture',{})):
+            result=b.grab(self.db,self.key,{'guid':'video-fixture','indexerId':7},'Video')
+        self.assertEqual(result['status'],'downloading')
+        self.assertEqual(dict(self.db.execute('SELECT media_kind,count(*) FROM queue GROUP BY media_kind')),
+                         {'Audio':1,'Video':1})
     def test_qbittorrent_removal_happens_after_verified_import(self):
-        source=self.audio();self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date')",(self.key,))
+        source=self.audio();self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date','Audio')",(self.key,))
         test=self
         class Session:
             def get(self,*args,**kwargs):return Response([{'hash':'hash','category':'asmarr','progress':1,'state':'uploading','content_path':str(source)}])
@@ -97,7 +111,7 @@ class AcquisitionTests(unittest.TestCase):
             result=b.monitor_downloads(self.db,self.cfg)
         self.assertEqual(result['jobs'][0]['status'],'complete');self.assertEqual(self.db.execute('SELECT state FROM queue').fetchone()[0],'removed');self.assertTrue(source.exists())
     def test_external_client_category_is_never_imported(self):
-        self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date')",(self.key,))
+        self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date','Audio')",(self.key,))
         class Session:
             def get(self,*a,**k):return Response([{'category':'radarr','progress':1}])
         with patch.object(b,'qbit',return_value=(Session(),'http://fixture',{})):

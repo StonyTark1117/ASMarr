@@ -471,7 +471,8 @@ def grab(db,key,candidate,media_kind='Audio'):
     resolved=next((c for c in candidates if c.get('guid')==candidate.get('guid') and c.get('indexerId')==candidate.get('indexerId')),None)
     if resolved is None:raise ValueError('search_candidate_expired')
     if db.execute('SELECT 1 FROM blocklist WHERE recording_key=? AND (download_id=? OR download_id IS NULL)',(key,resolved.get('guid'))).fetchone():raise ValueError('candidate_blocklisted')
-    existing=db.execute("SELECT * FROM queue WHERE recording_key=? AND state NOT IN ('removed','failed')",(key,)).fetchone()
+    existing=db.execute("""SELECT * FROM queue WHERE recording_key=? AND media_kind=?
+                           AND state NOT IN ('removed','failed')""",(key,media_kind)).fetchone()
     if existing:return dict(existing)
     magnet=resolved.get('magnetUrl') or resolved.get('downloadUrl','')
     payload=None
