@@ -24,6 +24,7 @@ import yaml
 import scraper as core
 import plex_playlists
 import video_media
+import acquisition_profiles
 from categories import CATEGORIES
 
 STATE = Path(os.environ.get('ASMARR_STATE', '/var/lib/asmarr'))
@@ -231,7 +232,7 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
     active=configured_discovery(db,cfg)
     def profile_rules(creator):
         name=active.get('creator_aliases',{}).get(creator,creator)
-        return dict(active, **{k:v for k,v in profile(db,{'creator':name}).items() if k in {'hypno_required','hypno_keywords','fantasy_blocklist'}})
+        return acquisition_profiles.discovery_config(active,profile(db,{'creator':name}))
     active['_profile_rules']=profile_rules
     original_enqueue=core.enqueue
     original_listing=core.youtube.listing

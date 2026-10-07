@@ -123,7 +123,7 @@ api.MapGet("/calendar",()=>store.Query("SELECT key,title,creator,published,state
 api.MapGet("/connectors",()=>new {sources=store.Query("SELECT * FROM sources ORDER BY name"),configuration=new[]{"reddit","soundgasm","youtube","sfw"}.Select(k=>new{kind=k,enabled=store.Setting("source."+k+".enabled","true")=="true"})});
 api.MapPut("/connectors/{kind}",(string kind,JsonElement j)=>{if(kind is not ("reddit" or "soundgasm" or "youtube" or "sfw"))return Results.BadRequest();store.Set("source."+kind+".enabled",j.GetProperty("enabled").GetBoolean()?"true":"false");return Results.Ok();});
 api.MapGet("/profiles",()=>store.Query("SELECT * FROM profiles"));
-api.MapPut("/profiles/{id:int}",(int id,ProfileEdit p)=>{store.Execute("UPDATE profiles SET name=$name,settings=$settings WHERE id=$id",("id",id),("name",p.Name),("settings",p.Settings.GetRawText()));return Results.Ok();});
+api.MapPut("/profiles/{id:int}",(int id,ProfileEdit p)=>{var error=ValidateProfile(p.Settings);if(error!=null)return Results.BadRequest(new{error});store.Execute("UPDATE profiles SET name=$name,settings=$settings WHERE id=$id",("id",id),("name",p.Name),("settings",p.Settings.GetRawText()));return Results.Ok();});
 api.MapGet("/video/profiles",()=>store.Query("SELECT * FROM video_quality_profiles ORDER BY id"));
 api.MapPut("/video/profiles/{id:int}",(int id,VideoProfileEdit p)=>{if(p.Resolution is not ("Any" or "2160p" or "1440p" or "1080p" or "720p" or "480p"))return Results.BadRequest(new{error="Unsupported resolution"});store.Execute("UPDATE video_quality_profiles SET name=$name,resolution=$resolution,settings=$settings WHERE id=$id",("id",id),("name",p.Name),("resolution",p.Resolution),("settings",p.Settings.GetRawText()));return Results.Ok();});
 api.MapGet("/settings",()=>store.Query("SELECT * FROM settings WHERE key NOT LIKE '%secret%'"));
@@ -155,6 +155,24 @@ app.MapFallbackToFile("index.html");app.Run();
 
 static object Disk(string path) {try{var drive=DriveInfo.GetDrives().Where(d=>path.StartsWith(d.Name,StringComparison.Ordinal)).OrderByDescending(d=>d.Name.Length).First();return new{available=drive.AvailableFreeSpace,total=drive.TotalSize};}catch{return new{available=0L,total=0L};}}
 static bool RootsOverlap(string first,string second){if(!System.IO.Path.IsPathFullyQualified(first)||!System.IO.Path.IsPathFullyQualified(second))return false;var a=System.IO.Path.GetFullPath(first).TrimEnd(System.IO.Path.DirectorySeparatorChar)+System.IO.Path.DirectorySeparatorChar;var b=System.IO.Path.GetFullPath(second).TrimEnd(System.IO.Path.DirectorySeparatorChar)+System.IO.Path.DirectorySeparatorChar;return a.StartsWith(b,StringComparison.Ordinal)||b.StartsWith(a,StringComparison.Ordinal);}
+static string? ValidateProfile(JsonElement settings)
+{
+    if(settings.ValueKind!=JsonValueKind.Object)return "Profile settings must be an object";
+    var codes=new HashSet<string>(new[]{"F","M","NB","A","ANY"},StringComparer.OrdinalIgnoreCase);
+    foreach(var key in new[]{"allowedSpeakers","allowedAudiences"})if(settings.TryGetProperty(key,out var values))
+    {
+        if(values.ValueKind!=JsonValueKind.Array||values.GetArrayLength()==0||values.EnumerateArray().Any(x=>x.ValueKind!=JsonValueKind.String||!codes.Contains(x.GetString()!)))return "Invalid "+key;
+    }
+    foreach(var key in new[]{"requiredTopics","excludedTerms"})if(settings.TryGetProperty(key,out var values))
+    {
+        if(values.ValueKind!=JsonValueKind.Array||values.EnumerateArray().Any(x=>x.ValueKind!=JsonValueKind.String||string.IsNullOrWhiteSpace(x.GetString())||x.GetString()!.Length>200))return "Invalid "+key;
+    }
+    foreach(var key in new[]{"requireSpeakerTag","trustedMissingSpeakerTag"})if(settings.TryGetProperty(key,out var value)&&value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))return "Invalid "+key;
+    if(settings.TryGetProperty("topicMatch",out var match)&&(match.ValueKind!=JsonValueKind.String||match.GetString() is not ("any" or "all")))return "Invalid topicMatch";
+    foreach(var key in new[]{"minimumDuration","backlogLimit"})if(settings.TryGetProperty(key,out var value)&&(value.ValueKind!=JsonValueKind.Number||!value.TryGetDouble(out var number)||double.IsNaN(number)||double.IsInfinity(number)||number<0))return "Invalid "+key;
+    if(settings.TryGetProperty("backlogLimit",out var backlog)&&(!backlog.TryGetInt32(out _)))return "Invalid backlogLimit";
+    return null;
+}
 static object IntegrationStatus(Store s) {var p=System.IO.Path.Combine(s.ConfigRoot,"integrations.json");if(!File.Exists(p))return new Dictionary<string,object>();using var d=JsonDocument.Parse(File.ReadAllText(p));return d.RootElement.EnumerateObject().ToDictionary(x=>x.Name,x=>(object)new{configured=true,url=x.Value.TryGetProperty("url",out var u)?u.GetString():null});}
 record Login(string Username,string Password);
 record PasswordChange(string CurrentPassword,string Password);
