@@ -10,8 +10,10 @@ int assertions=0;
 void Assert(bool condition,string name){if(!condition)throw new InvalidOperationException(name);assertions++;Console.WriteLine("PASS "+name);}
 Assert(store.Query("PRAGMA integrity_check")[0].Values.First()!.ToString()=="ok","migrations retain database integrity");
 Assert(store.Query("PRAGMA journal_mode")[0].Values.First()!.ToString()=="wal","database uses WAL");
-Assert(store.Query("SELECT * FROM schema_migrations").Count==1,"repeat migration is idempotent");
-Assert(store.Query("SELECT * FROM tasks").Count==7,"repeat migration does not duplicate tasks");
+Assert(store.Query("SELECT * FROM schema_migrations").Count==2,"repeat migration is idempotent");
+Assert(store.Query("SELECT * FROM tasks").Count==9,"repeat migration does not duplicate tasks");
+Assert(store.Query("SELECT * FROM video_quality_profiles").Count==6,"built-in video profiles are seeded once");
+Assert(store.Query("SELECT monitor_video FROM creators").Count==0,"migration does not invent creators or enable video");
 Assert(store.Setting("mode")=="shadow","first boot gates production writes");
 var leases=await Task.WhenAll(Enumerable.Range(0,10).Select(i=>Task.Run(()=>store.TryAcquireLease("test-provider",i.ToString(),TimeSpan.FromMinutes(1)))));
 Assert(leases.Count(x=>x)==1,"concurrent tasks have exactly one lease holder");

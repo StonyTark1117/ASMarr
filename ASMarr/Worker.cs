@@ -54,12 +54,16 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             {
                 "migration" => await providers.Run("migrate",new {},timeout.Token),
                 "discovery" => await providers.Run("discover",new {shadow,kind=args.RootElement.TryGetProperty("kind",out var k)?k.GetString():"all"},timeout.Token),
+                "video-backfill" => await providers.Run("video-backfill",args.RootElement,timeout.Token),
                 "disk-scan" => await providers.Run("scan",new {},timeout.Token),
                 "plex-verify" => await providers.Run("plex-verify",new {},timeout.Token),
                 "playlists-verify" => await providers.Run("playlists-verify",new {},timeout.Token),
                 "plex" => shadow ? new {status="shadow",message="Plex writes disabled"} : (object)await providers.Run("plex",new {},timeout.Token),
+                "plex-video-verify" => await providers.Run("plex-video-verify",new {},timeout.Token),
+                "plex-video" => shadow ? new {status="shadow",message="Plex video writes disabled"} : (object)await providers.Run("plex-video",new {},timeout.Token),
                 "playlists" => await providers.Run("playlists",new {preview=shadow},timeout.Token),
                 "queue" => shadow ? new {status="shadow",message="Acquisitions disabled"} : (object)await providers.Run("process-queue",new {},timeout.Token),
+                "video-queue" => shadow ? new {status="shadow",message="Video acquisitions disabled"} : (object)await providers.Run("video-process-queue",new {},timeout.Token),
                 "health" => new {status="ok",integrity=store.Query("PRAGMA quick_check"),mode=store.Setting("mode")},
                 "backup" => new {path=store.Backup()},
                 "source-test" => await providers.Run("test-source",args.RootElement,timeout.Token),
@@ -74,6 +78,7 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             store.Execute("UPDATE commands SET state='completed',result=$result,finished=$now WHERE id=$id",("id",id),("result",json),("now",DateTimeOffset.UtcNow.ToString("O")));
             store.Execute("UPDATE tasks SET last_run=$now,last_result=$result WHERE name=$name",("name",name),("now",DateTimeOffset.UtcNow.ToString("O")),("result",json));
             store.Log("info",name+" completed");
+            if(name is "video-backfill" or "video-queue")await hub.Clients.All.SendAsync("assetState",new {mediaKind="Video",command=id,state="updated"},ct);
             if(name=="queue"&&!shadow&&result is JsonElement queueResult&&queueResult.TryGetProperty("saved",out var saved)&&saved.GetArrayLength()>0)
             {
                 try{await notifications.Notify($"ASMarr imported {saved.GetArrayLength()} recordings.",ct);}catch(Exception){store.Log("warning","Import succeeded; notification delivery failed");}

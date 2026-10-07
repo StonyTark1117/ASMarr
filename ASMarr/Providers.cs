@@ -3,6 +3,8 @@ using System.Text.Json;
 
 namespace ASMarr;
 
+public enum MediaKind { Audio, Video }
+
 public interface ISourceConnector
 {
     string Kind { get; }

@@ -31,27 +31,65 @@ public sealed class Store
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);
         CREATE TABLE IF NOT EXISTS sources(name TEXT PRIMARY KEY,status TEXT,last_attempt INTEGER,last_success INTEGER,last_download INTEGER,details TEXT);
         CREATE TABLE IF NOT EXISTS runs(started INTEGER PRIMARY KEY,finished INTEGER,status TEXT,details TEXT);
-        CREATE TABLE IF NOT EXISTS creators(id INTEGER PRIMARY KEY,name TEXT UNIQUE NOT NULL,aliases TEXT NOT NULL DEFAULT '[]',path TEXT NOT NULL,tags TEXT NOT NULL DEFAULT '[]',monitored INTEGER NOT NULL DEFAULT 1,profile_id INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS creators(id INTEGER PRIMARY KEY,name TEXT UNIQUE NOT NULL,aliases TEXT NOT NULL DEFAULT '[]',path TEXT NOT NULL,tags TEXT NOT NULL DEFAULT '[]',monitored INTEGER NOT NULL DEFAULT 1,profile_id INTEGER NOT NULL DEFAULT 1,monitor_video INTEGER NOT NULL DEFAULT 0,video_quality_profile_id INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS identities(id INTEGER PRIMARY KEY,creator_id INTEGER REFERENCES creators(id),kind TEXT NOT NULL,handle TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,UNIQUE(creator_id,kind,handle));
         CREATE TABLE IF NOT EXISTS profiles(id INTEGER PRIMARY KEY,name TEXT NOT NULL,settings TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS video_quality_profiles(id INTEGER PRIMARY KEY,name TEXT UNIQUE NOT NULL,resolution TEXT NOT NULL,settings TEXT NOT NULL,is_builtin INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS media_assets(recording_key TEXT NOT NULL REFERENCES assets(key) ON DELETE CASCADE,media_kind TEXT NOT NULL CHECK(media_kind IN ('Audio','Video')),wanted INTEGER NOT NULL DEFAULT 1,state TEXT NOT NULL DEFAULT 'wanted',saved_path TEXT,source_url TEXT,provider_id TEXT,attempts INTEGER NOT NULL DEFAULT 0,retry_after INTEGER NOT NULL DEFAULT 0,error TEXT,acquired INTEGER,details TEXT NOT NULL DEFAULT '{}',PRIMARY KEY(recording_key,media_kind));
+        CREATE TABLE IF NOT EXISTS video_candidates(id INTEGER PRIMARY KEY,recording_key TEXT NOT NULL REFERENCES assets(key) ON DELETE CASCADE,provider TEXT NOT NULL,provider_id TEXT,url TEXT NOT NULL,normalized_url TEXT NOT NULL,fingerprint TEXT,resolution INTEGER,source_quality INTEGER NOT NULL DEFAULT 0,bitrate INTEGER NOT NULL DEFAULT 0,video_codec TEXT,audio_codec TEXT,container TEXT,requires_transcode INTEGER NOT NULL DEFAULT 0,interactive_only INTEGER NOT NULL DEFAULT 0,details TEXT NOT NULL DEFAULT '{}',UNIQUE(provider,provider_id),UNIQUE(normalized_url));
+        CREATE TABLE IF NOT EXISTS backfill_jobs(id TEXT PRIMARY KEY,creator_id INTEGER NOT NULL REFERENCES creators(id),media_kind TEXT NOT NULL,state TEXT NOT NULL,discovered INTEGER NOT NULL DEFAULT 0,eligible INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0,cursor TEXT,started TEXT NOT NULL,updated TEXT NOT NULL,finished TEXT,error TEXT);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,name TEXT NOT NULL,arguments TEXT NOT NULL,state TEXT NOT NULL,created TEXT NOT NULL,started TEXT,finished TEXT,result TEXT,error TEXT);
         CREATE TABLE IF NOT EXISTS tasks(name TEXT PRIMARY KEY,interval_seconds INTEGER NOT NULL,next_run TEXT NOT NULL,last_run TEXT,last_result TEXT,enabled INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS task_locks(name TEXT PRIMARY KEY,owner TEXT NOT NULL,expires TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY,at TEXT NOT NULL,event TEXT NOT NULL,recording_key TEXT,details TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS queue(id TEXT PRIMARY KEY,recording_key TEXT NOT NULL,download_id TEXT UNIQUE,state TEXT NOT NULL,provider TEXT NOT NULL,details TEXT NOT NULL,created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS queue(id TEXT PRIMARY KEY,recording_key TEXT NOT NULL,download_id TEXT UNIQUE,state TEXT NOT NULL,provider TEXT NOT NULL,details TEXT NOT NULL,created TEXT NOT NULL,media_kind TEXT NOT NULL DEFAULT 'Audio');
         CREATE TABLE IF NOT EXISTS blocklist(id INTEGER PRIMARY KEY,recording_key TEXT,download_id TEXT,reason TEXT NOT NULL,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY,at TEXT NOT NULL,level TEXT NOT NULL,message TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS shadow_cycles(id INTEGER PRIMARY KEY,started TEXT NOT NULL,finished TEXT,result TEXT NOT NULL,clean INTEGER NOT NULL DEFAULT 0,comparison TEXT NOT NULL DEFAULT '{}');
         CREATE TABLE IF NOT EXISTS migration_audits(id INTEGER PRIMARY KEY,at TEXT NOT NULL,result TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS assets_state ON assets(state,retry_after);
         CREATE INDEX IF NOT EXISTS assets_creator ON assets(creator);
+        CREATE INDEX IF NOT EXISTS media_assets_state ON media_assets(media_kind,state,retry_after);
+        CREATE INDEX IF NOT EXISTS video_candidates_recording ON video_candidates(recording_key);
         INSERT OR IGNORE INTO schema_migrations VALUES(1,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
         """; c.ExecuteNonQuery();
+        AddColumn(db,"creators","monitor_video","INTEGER NOT NULL DEFAULT 0");
+        AddColumn(db,"creators","video_quality_profile_id","INTEGER NOT NULL DEFAULT 1");
+        AddColumn(db,"queue","media_kind","TEXT NOT NULL DEFAULT 'Audio'");
+        // Existing deployments become audio assets only. The video opt-in remains
+        // false, so applying this migration can never initiate video work.
+        using(var migrate=db.CreateCommand())
+        {
+            migrate.CommandText="""
+            INSERT OR IGNORE INTO video_quality_profiles(id,name,resolution,settings,is_builtin) VALUES
+              (1,'Any / highest preferred','Any','{"preferHighest":true}',1),
+              (2,'2160p','2160p','{}',1),(3,'1440p','1440p','{}',1),
+              (4,'1080p','1080p','{}',1),(5,'720p','720p','{}',1),(6,'480p','480p','{}',1);
+            INSERT OR IGNORE INTO media_assets(recording_key,media_kind,wanted,state,saved_path,attempts,retry_after,error,acquired)
+              SELECT key,'Audio',CASE WHEN state='suppressed' THEN 0 ELSE 1 END,
+                CASE state WHEN 'pending' THEN 'wanted' ELSE state END,saved_path,attempts,retry_after,error,acquired FROM assets;
+            INSERT OR IGNORE INTO schema_migrations VALUES(2,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+            """;
+            migrate.ExecuteNonQuery();
+        }
         SettingDefault("mode", "shadow"); SettingDefault("naming", "{Creator}/Singles/{Title} [{SourceId}].{ext}");
         SettingDefault("root", "/mnt/cephfs/media/asmr");
-        foreach (var (name, seconds) in new[] { ("discovery",86400), ("queue",300), ("disk-scan",86400), ("plex",600), ("playlists",86400), ("health",300), ("backup",86400) })
+        SettingDefault("video.root", "/mnt/cephfs/media/asmr-video");
+        SettingDefault("video.free_space_gib", "20");
+        SettingDefault("video.concurrency", "1");
+        SettingDefault("video.naming", "{Creator}/{Year}/{Date} - {Title} [{Provider}-{SourceId}].{ext}");
+        foreach (var (name, seconds) in new[] { ("discovery",86400), ("queue",300), ("video-queue",300), ("disk-scan",86400), ("plex",600), ("plex-video",600), ("playlists",86400), ("health",300), ("backup",86400) })
             Execute("INSERT OR IGNORE INTO tasks(name,interval_seconds,next_run) VALUES($name,$seconds,$next)", ("name", name), ("seconds", seconds), ("next", DateTimeOffset.UtcNow.AddSeconds(name == "discovery" ? 60 : seconds).ToString("O")));
+    }
+    static void AddColumn(SqliteConnection db,string table,string column,string definition)
+    {
+        using var inspect=db.CreateCommand();inspect.CommandText=$"PRAGMA table_info({table})";
+        using var reader=inspect.ExecuteReader();bool exists=false;
+        while(reader.Read())if(string.Equals(reader.GetString(1),column,StringComparison.OrdinalIgnoreCase)){exists=true;break;}
+        reader.Close();
+        if(exists)return;
+        using var alter=db.CreateCommand();alter.CommandText=$"ALTER TABLE {table} ADD COLUMN {column} {definition}";alter.ExecuteNonQuery();
     }
     public List<Dictionary<string,object?>> Query(string sql, params (string, object?)[] args)
     {

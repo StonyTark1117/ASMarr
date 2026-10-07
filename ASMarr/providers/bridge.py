@@ -23,6 +23,7 @@ import requests
 import yaml
 import scraper as core
 import plex_playlists
+import video_media
 from categories import CATEGORIES
 
 STATE = Path(os.environ.get('ASMARR_STATE', '/var/lib/asmarr'))
@@ -44,6 +45,10 @@ def setting(db, key, default=''):
     return r[0] if r else default
 
 
+def has_table(db,name):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(name,)).fetchone() is not None
+
+
 def configuration(db):
     cfg = yaml.safe_load((CONFIG / 'sources.yaml').read_text())
     cfg.update(state_db=str(DB), output_root=setting(db, 'root', '/mnt/cephfs/media/asmr'),
@@ -53,6 +58,9 @@ def configuration(db):
     if plex:
         cfg['plex'] = dict(cfg.get('plex', {}), **{k:v for k,v in plex.items() if k != 'token'})
         if plex.get('token'): secrets['plex_token'] = plex['token']
+    cfg.update(video_root=setting(db, 'video.root', '/mnt/cephfs/media/asmr-video'),
+               video_free_space_gib=float(setting(db, 'video.free_space_gib', '20')),
+               video_concurrency=int(setting(db, 'video.concurrency', '1')))
     return cfg, secrets
 
 
@@ -247,7 +255,16 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
             if qualified:
                 for k,h in [('reddit',qualified['reddit']),('soundgasm',qualified['soundgasm'])]:conn.execute('INSERT OR IGNORE INTO identities(creator_id,kind,handle) VALUES(?,?,?)',(creator_id,k,h))
             monitored.add(creator)
-        return original_enqueue(conn,sid,source,creator,title,options,published)
+        result=original_enqueue(conn,sid,source,creator,title,options,published)
+        creator_row=conn.execute('SELECT monitor_video FROM creators WHERE name=?',(creator,)).fetchone()
+        if creator_row and creator_row[0]:
+            recording=core.lookup(conn,sid)
+            if recording:
+                for target_kind,url in options:
+                    host=(urllib.parse.urlparse(url).hostname or '').lower()
+                    provider='youtube' if target_kind=='youtube' else 'reddit' if host=='v.redd.it' else None
+                    if provider:video_media.add_candidate(conn,recording['key'],provider,url)
+        return result
     core.enqueue=monitored_enqueue
     try:
         reports=core.discover(working,active,secrets,capture,selected,inspect=shadow)
@@ -357,7 +374,7 @@ def rank(asset,candidate,opts):
     return dict(candidate,confidence=round(score,4),exactCreator=creator_ok,titleMatch=round(similarity,4),autoGrab=creator_ok and similarity==1 and audio and score>=opts.get('confidenceThreshold',.92))
 
 
-def search(db,key):
+def search(db,key,media_kind='Audio'):
     row=db.execute('SELECT * FROM assets WHERE key=?',(key,)).fetchone()
     if not row: raise ValueError('recording_not_found')
     opts=integrations().get('prowlarr',{})
@@ -366,11 +383,23 @@ def search(db,key):
     response.raise_for_status()
     blocked={r[0] for r in db.execute('SELECT download_id FROM blocklist WHERE recording_key=?',(key,))}
     items=[rank(dict(row),c,opts) for c in response.json() if c.get('guid') not in blocked]
-    items.sort(key=lambda c:c['confidence'],reverse=True)
-    with db: core.meta_set(db,'search_results:'+key,items)
+    if media_kind=='Video':
+        for item in items:
+            title=item.get('title','')
+            match=re.search(r'(?i)\b(2160|1440|1080|720|480)p\b',title)
+            item['resolution']=int(match.group(1)) if match else 0
+            item['autoGrab']=False
+            item['interactiveOnly']=True
+        creator=db.execute('SELECT video_quality_profile_id FROM creators WHERE name=?',(row['creator'],)).fetchone()
+        profile_row=db.execute('SELECT resolution,settings FROM video_quality_profiles WHERE id=?',(creator[0] if creator else 1,)).fetchone()
+        profile_opts={'resolution':profile_row['resolution'],**json.loads(profile_row['settings'])} if profile_row else {'resolution':'Any'}
+        items=[x for x in (video_media.rank_candidate(item,profile_opts) for item in items) if x]
+        items.sort(key=lambda c:(c['rank'],c['confidence']),reverse=True)
+    else:items.sort(key=lambda c:c['confidence'],reverse=True)
+    with db: core.meta_set(db,'search_results:'+media_kind+':'+key,items)
     public=[{k:v for k,v in c.items() if k not in {'downloadUrl','infoUrl','magnetUrl'}} for c in items]
     result={'status':'ok','candidates':public}
-    event(db,'interactive-search',key,{'count':len(items)})
+    event(db,'interactive-search',key,{'count':len(items),'mediaKind':media_kind})
     return result
 
 
@@ -401,6 +430,9 @@ def acquire(db,cfg,key):
     out,url=core.save_asset(asset,effective,core.HTTP())
     with db:
         now=int(time.time()); db.execute("UPDATE assets SET saved_path=?,state='complete',acquired=?,error=NULL,retry_after=0 WHERE key=?",(str(out),now,key))
+        if has_table(db,'media_assets'):
+            video_media.ensure_asset_rows(db,key)
+            db.execute("UPDATE media_assets SET state='imported',wanted=1,saved_path=?,acquired=?,error=NULL,retry_after=0 WHERE recording_key=? AND media_kind='Audio'",(str(out),now,key))
         sid='asset:'+hashlib.sha256(key.encode()).hexdigest()
         db.execute('INSERT OR REPLACE INTO downloads VALUES(?,?,?,?,?,?,?)',(sid,row['source'],url,row['creator'],row['title'],str(out),now))
         core.meta_set(db,'plex_pending',True)
@@ -432,9 +464,9 @@ def torrent_hash(payload):
     raise ValueError('torrent_info_missing')
 
 
-def grab(db,key,candidate):
+def grab(db,key,candidate,media_kind='Audio'):
     production(db)
-    candidates=core.meta_get(db,'search_results:'+key,[])
+    candidates=core.meta_get(db,'search_results:'+media_kind+':'+key,[])
     resolved=next((c for c in candidates if c.get('guid')==candidate.get('guid') and c.get('indexerId')==candidate.get('indexerId')),None)
     if resolved is None:raise ValueError('search_candidate_expired')
     if db.execute('SELECT 1 FROM blocklist WHERE recording_key=? AND (download_id=? OR download_id IS NULL)',(key,resolved.get('guid'))).fetchone():raise ValueError('candidate_blocklisted')
@@ -462,7 +494,7 @@ def grab(db,key,candidate):
     queue_id='torrent:'+download_id
     details={'guid':resolved.get('guid'),'indexerId':resolved.get('indexerId'),'confidence':resolved.get('confidence')}
     with db:
-        db.execute("INSERT INTO queue(id,recording_key,download_id,state,provider,details,created) VALUES(?,?,?,'submitting','qbittorrent',?,?) ON CONFLICT(id) DO NOTHING",(queue_id,key,download_id,json.dumps(details),time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())))
+        db.execute("INSERT INTO queue(id,recording_key,download_id,state,provider,details,created,media_kind) VALUES(?,?,?,'submitting','qbittorrent',?,?,?) ON CONFLICT(id) DO NOTHING",(queue_id,key,download_id,json.dumps(details),time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),media_kind))
     existing=s.get(base+'/api/v2/torrents/info',params={'hashes':download_id},timeout=30);existing.raise_for_status()
     if not existing.json():
         data={'category':'asmarr','savepath':'/mnt/downloads/asmarr'}
@@ -470,7 +502,7 @@ def grab(db,key,candidate):
         r=s.post(base+'/api/v2/torrents/add',data=data,files={'torrents':('recording.torrent',payload,'application/x-bittorrent')} if payload else None,timeout=60)
         if r.status_code!=200 or r.text.strip()!='Ok.':raise ValueError('qbittorrent_submission_unconfirmed')
     with db:db.execute("UPDATE queue SET state='downloading' WHERE id=?",(queue_id,))
-    event(db,'grab',key,{'downloadId':download_id,'provider':'qbittorrent'})
+    event(db,'grab',key,{'downloadId':download_id,'provider':'qbittorrent','mediaKind':media_kind})
     return {'status':'downloading','downloadId':download_id,'id':queue_id}
 
 
@@ -529,6 +561,9 @@ def import_audio(db,cfg,key,path):
             raise
     with db:
         now=int(time.time());db.execute("UPDATE assets SET state='complete',saved_path=?,acquired=?,error=NULL,retry_after=0 WHERE key=?",(str(destination),now,key))
+        if has_table(db,'media_assets'):
+            video_media.ensure_asset_rows(db,key)
+            db.execute("UPDATE media_assets SET state='imported',wanted=1,saved_path=?,acquired=?,error=NULL,retry_after=0 WHERE recording_key=? AND media_kind='Audio'",(str(destination),now,key))
         db.execute('INSERT OR REPLACE INTO downloads VALUES(?,?,?,?,?,?,?)',('asset:'+hashlib.sha256(key.encode()).hexdigest(),'qbittorrent',asset['url'],asset['creator'],asset['title'],str(destination),now))
         core.meta_set(db,'plex_pending',True);core.meta_set(db,'plex_pending_paths',sorted(set(core.meta_get(db,'plex_pending_paths',[]))|{str(destination)}))
     event(db,'import',key,{'provider':'qbittorrent','path':str(destination),'sha256':expected})
@@ -548,9 +583,16 @@ def monitor_downloads(db,cfg):
         if info.get('progress',0)<1 or info.get('state') in {'checkingDL','checkingUP','moving','checkingResumeData'}:results.append({'id':job['id'],'status':info.get('state'),'progress':info.get('progress')});continue
         try:
             path=Path(info.get('content_path') or info.get('save_path',''))
-            candidates=[path] if path.is_file() else [p for p in path.rglob('*') if p.is_file() and p.suffix.lower() in ALLOWED]
-            if len(candidates)!=1:raise ValueError('completed_torrent_audio_ambiguous')
-            result=import_audio(db,cfg,job['recording_key'],str(candidates[0]))
+            media_kind=job['media_kind'] if 'media_kind' in job.keys() else 'Audio'
+            extensions=video_media.VIDEO_EXTENSIONS if media_kind=='Video' else ALLOWED
+            candidates=[path] if path.is_file() and path.suffix.lower() in extensions else [p for p in path.rglob('*') if p.is_file() and p.suffix.lower() in extensions]
+            if len(candidates)!=1:raise ValueError('completed_torrent_media_ambiguous')
+            if media_kind=='Video':
+                cached=core.meta_get(db,'search_results:Video:'+job['recording_key'],[])
+                detail=json.loads(job['details'] or '{}')
+                selected=next((c for c in cached if c.get('guid')==detail.get('guid')),{'provider':'prowlarr','provider_id':job['download_id']})
+                result=video_media.import_video(db,cfg,job['recording_key'],str(candidates[0]),selected,import_audio)
+            else:result=import_audio(db,cfg,job['recording_key'],str(candidates[0]))
             with db:db.execute("UPDATE queue SET state='imported' WHERE id=?",(job['id'],))
             # Destination is durable and validated before any torrent removal.
             if opts.get('retention','keep')=='remove-torrent':
@@ -571,7 +613,7 @@ def process_queue(db,cfg):
         rules=profile(db,row)
         if not json.loads(row['targets'] or '[]') or row['attempts']>=rules.get('directRetries',3):
             if rules.get('fallback',True):
-                found=search(db,row['key'])
+                found=search(db,row['key'],'Audio')
                 candidate=next((c for c in found['candidates'] if c['autoGrab']),None)
                 if candidate:fallback.append(grab(db,row['key'],candidate))
                 else:event(db,'search-review',row['key'],{'candidates':len(found['candidates'])})
@@ -597,10 +639,15 @@ def dispatch(operation,args):
             return dict(row) if row else {'status':'not_found'}
         if operation=='acquire': return acquire(db,cfg,args['key'])
         if operation=='process-queue':return process_queue(db,cfg)
-        if operation=='search': return search(db,args['key'])
-        if operation=='grab':return grab(db,args['key'],args['candidate'])
+        if operation=='video-backfill':return video_media.backfill(db,cfg,secrets,args,core)
+        if operation=='video-process-queue':return video_media.process_queue(db,cfg,import_audio)
+        if operation=='search': return search(db,args['key'],args.get('mediaKind','Audio'))
+        if operation=='grab':return grab(db,args['key'],args['candidate'],args.get('mediaKind','Audio'))
         if operation=='downloads':return monitor_downloads(db,cfg)
-        if operation=='manual-import':return import_audio(db,cfg,args['key'],args['path'])
+        if operation=='manual-import':
+            if args.get('mediaKind','Audio')=='Video':
+                return video_media.import_video(db,cfg,args['key'],args['path'],args.get('candidate',{'provider':'manual'}),import_audio)
+            return import_audio(db,cfg,args['key'],args['path'])
         if operation=='rename-preview':
             rows=db.execute('SELECT * FROM assets WHERE key=?',(args['key'],)).fetchall() if args.get('key') else db.execute("SELECT * FROM assets WHERE state='complete'").fetchall()
             return [{'key':r['key'],'existing':r['saved_path'],'proposed':str(naming(db,r,Path(r['saved_path']).suffix if r['saved_path'] else '.m4a'))} for r in rows]
@@ -632,6 +679,8 @@ def dispatch(operation,args):
             if not preview: production(db)
             return plex_playlists.sync(db,cfg,secrets,core,dry_run=preview)
         if operation=='plex': production(db); return {'status':core.plex_refresh(db,cfg,secrets,core.HTTP())}
+        if operation=='plex-video': production(db); return video_media.plex_refresh(db,cfg,secrets)
+        if operation=='plex-video-verify': return video_media.plex_library_validation(cfg,secrets)
         if operation=='plex-verify':
             client=plex_playlists.Client(cfg,secrets)
             rows=plex_playlists.all_items(client,'/library/sections/'+str(cfg['plex']['section_id'])+'/all','Track',type=10)
