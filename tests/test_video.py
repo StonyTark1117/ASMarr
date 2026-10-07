@@ -101,6 +101,18 @@ class VideoTests(unittest.TestCase):
                                 {'provider':'youtube','provider_id':'abcdefghijk'}, importer)
         self.assertTrue(result['hasAudio']); self.assertEqual(calls, [('recording','.m4a')])
 
+    def test_audio_derivation_failure_does_not_fail_imported_video(self):
+        source = self.video_file(audio=True)
+        def importer(*_): raise ValueError('audio_import_failed')
+        result = v.import_video(self.db, self.cfg, 'recording', source,
+                                {'provider':'youtube','provider_id':'abcdefghijk'}, importer)
+        states = dict(self.db.execute(
+            "SELECT media_kind,state FROM media_assets WHERE recording_key='recording'"))
+        self.assertEqual(result['status'], 'imported')
+        self.assertEqual(result['derivedAudio']['status'], 'failed')
+        self.assertEqual(states, {'Audio':'failed', 'Video':'imported'})
+        self.assertTrue(Path(result['path']).is_file())
+
     def test_compatible_artwork_is_stored_with_matching_basename(self):
         source, artwork = self.video_file(), self.artwork_file()
         result = v.import_video(self.db, self.cfg, 'recording', source,

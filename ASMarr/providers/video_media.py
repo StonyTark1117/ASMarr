@@ -341,6 +341,9 @@ def import_video(db, cfg, key, source, candidate, audio_importer=None, artwork=N
     asset = db.execute('SELECT * FROM assets WHERE key=?', (key,)).fetchone()
     if not asset:
         raise ValueError('recording_not_found')
+    ensure_asset_rows(db, key, video_wanted=True,
+                      source_url=candidate.get('normalized_url') or candidate.get('url'),
+                      provider_id=candidate.get('provider_id'))
     root = Path(cfg['video_root']).resolve()
     destination = video_name(asset, candidate, source.suffix, root)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -377,7 +380,22 @@ def import_video(db, cfg, key, source, candidate, audio_importer=None, artwork=N
             try:
                 p = subprocess.run(['ffmpeg','-v','error','-i',str(source),'-vn','-c:a','copy','-y',str(extracted)], timeout=900)
                 if p.returncode == 0:
-                    derived = audio_importer(db, cfg, key, str(extracted))
+                    try:
+                        derived = audio_importer(db, cfg, key, str(extracted))
+                    except Exception as exc:
+                        # The validated video has already been atomically imported.
+                        # Keep that success independent and leave Audio retryable.
+                        reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+                        retry = int(time.time()) + 300
+                        with db:
+                            db.execute("""UPDATE media_assets SET state='failed',wanted=1,
+                                          attempts=attempts+1,retry_after=?,error=?
+                                          WHERE recording_key=? AND media_kind='Audio'""",
+                                       (retry, reason, key))
+                            db.execute("""UPDATE assets SET state='failed',attempts=attempts+1,
+                                          retry_after=?,error=? WHERE key=? AND state<>'complete'""",
+                                       (retry, reason, key))
+                        derived = {'status': 'failed', 'error': reason}
             finally:
                 extracted.unlink(missing_ok=True)
     return {'status': 'imported', 'path': str(destination), 'sha256': expected,
