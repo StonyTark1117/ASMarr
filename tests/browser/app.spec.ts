@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
-const config = "./runtime/config";
-const auth = () => JSON.parse(readFileSync(config + "/auth.json", "utf8"));
+const config = () => JSON.parse(readFileSync("./runtime/session.json", "utf8")).config;
+const auth = () => JSON.parse(readFileSync(config() + "/auth.json", "utf8"));
 let verifiedSession: any[] | null = null;
 async function login(page: any) {
   // Exercise form login once, then reuse that verified session in isolated page
@@ -13,7 +13,7 @@ async function login(page: any) {
     await expect(page.getByRole("heading", {name:"Welcome to your quiet corner."})).toBeVisible();
     return;
   }
-  const password = readFileSync(config + "/initial-admin.txt", "utf8")
+  const password = readFileSync(config() + "/initial-admin.txt", "utf8")
     .split("\n")[1]
     .split(": ")[1];
   await page.goto("/");

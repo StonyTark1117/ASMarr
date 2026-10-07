@@ -6,13 +6,18 @@ import signal
 import sqlite3
 import subprocess
 import time
+import tempfile
 import requests
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 root=Path(__file__).resolve().parent
 runtime=root/'runtime';runtime.mkdir(exist_ok=True)
-state=runtime/'state';config=runtime/'config';state.mkdir(exist_ok=True);config.mkdir(exist_ok=True)
-cert=runtime/'cert.pem';key=runtime/'key.pem'
+session=Path(tempfile.mkdtemp(prefix='session-',dir=runtime))
+state=session/'state';config=session/'config';state.mkdir(mode=0o700);config.mkdir(mode=0o700)
+manifest=runtime/'session.json'
+with manifest.open('w') as output:
+    manifest.chmod(0o600);json.dump({'config':str(config),'state':str(state)},output)
+cert=session/'cert.pem';key=session/'key.pem'
 subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(cert),'-days','1','-subj','/CN=localhost'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 env=dict(os.environ,ASMARR_STATE=str(state),ASMARR_CONFIG=str(config),ASPNETCORE_URLS='https://127.0.0.1:8789',ASPNETCORE_Kestrel__Certificates__Default__Path=str(cert),ASPNETCORE_Kestrel__Certificates__Default__KeyPath=str(key))
 application=root.parent.parent/'publish'
@@ -26,7 +31,7 @@ try:
             if requests.get('https://127.0.0.1:8789/healthz',verify=False,timeout=1).status_code==200:break
         except requests.RequestException:pass
         time.sleep(.2)
-    library=runtime/'library';library.mkdir(exist_ok=True)
+    library=session/'library';library.mkdir(exist_ok=True)
     with sqlite3.connect(state/'asmarr.db') as db:
         db.execute('UPDATE settings SET value=? WHERE key=?',(str(library),'root'))
         db.execute('UPDATE tasks SET enabled=0')
@@ -36,7 +41,7 @@ try:
             db.execute('INSERT OR IGNORE INTO identities(creator_id,kind,handle) VALUES(?,?,?)',(id,'soundgasm','Fixture'+str(id)))
         db.execute("INSERT OR IGNORE INTO assets(key,url,targets,source,creator,title,published,state) VALUES('fixture:bedtime','https://example.invalid/bedtime','[]','soundgasm:Fixture1','Quiet Creator','A quiet bedtime recording',1791400000,'pending')")
         db.execute("INSERT OR IGNORE INTO sources(name,status,last_success,details) VALUES('soundgasm:Fixture1','healthy',1791400000,'{}')")
-    (runtime/'ready').touch()
+    (session/'ready').touch()
     process.wait()
 finally:
     if process.poll() is None:process.terminate();process.wait(timeout=20)
