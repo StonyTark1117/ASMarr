@@ -1,0 +1,36 @@
+[Unit]
+Description=ASMarr recording library and acquisition manager
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/cephfs/media /mnt/downloads
+
+[Service]
+Type=simple
+User=asmarr
+Group=asmarr
+WorkingDirectory=/opt/asmarr
+ExecStart=/opt/asmarr/ASMarr
+Environment=ASPNETCORE_URLS=https://0.0.0.0:8787
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=ASPNETCORE_Kestrel__Certificates__Default__Path=/etc/asmarr/tls.pem
+Environment=ASPNETCORE_Kestrel__Certificates__Default__KeyPath=/etc/asmarr/tls.key
+Environment=DOTNET_EnableDiagnostics=0
+Restart=on-failure
+RestartSec=5
+StateDirectory=asmarr
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/asmarr /etc/asmarr
+ReadOnlyPaths=/mnt/cephfs/media/asmr /mnt/downloads/asmarr
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=1536M
+CPUQuota=200%
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target
