@@ -467,9 +467,15 @@ def plex_library_validation(cfg, secrets):
     scanner = section.get('scanner', '')
     if section.get('type') != 'movie' or (agent != 'com.plexapp.agents.none' and 'video' not in scanner.casefold()):
         raise ValueError('plex_video_library_must_be_other_videos')
-    locations = requests.get(plex['url'].rstrip('/') + f'/library/sections/{video["section_id"]}', headers={'X-Plex-Token': token}, timeout=(10,30))
-    locations.raise_for_status()
-    location_paths = [x.get('path') for x in et.fromstring(locations.text).findall('.//Location') if x.get('path')]
+    # Plex includes library roots on each Directory returned by the section
+    # inventory. Some versions omit them from /library/sections/{id}, whose
+    # response is primarily a media listing, so prefer the authoritative
+    # inventory element and retain the older endpoint as a compatibility fallback.
+    location_paths = [x.get('path') for x in section.findall('.//Location') if x.get('path')]
+    if not location_paths:
+        locations = requests.get(plex['url'].rstrip('/') + f'/library/sections/{video["section_id"]}', headers={'X-Plex-Token': token}, timeout=(10,30))
+        locations.raise_for_status()
+        location_paths = [x.get('path') for x in et.fromstring(locations.text).findall('.//Location') if x.get('path')]
     if not location_paths or not any(Path(cfg['video_root']).resolve().is_relative_to(Path(p).resolve()) for p in location_paths):
         raise ValueError('plex_video_root_not_in_library')
     if any(paths_overlap(cfg['output_root'], p) for p in location_paths):
