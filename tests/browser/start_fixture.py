@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import sqlite3
 import subprocess
+import sys
 import time
 import tempfile
 import requests
@@ -19,7 +20,7 @@ with manifest.open('w') as output:
     manifest.chmod(0o600);json.dump({'config':str(config),'state':str(state)},output)
 cert=session/'cert.pem';key=session/'key.pem'
 subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(cert),'-days','1','-subj','/CN=localhost'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-env=dict(os.environ,ASMARR_STATE=str(state),ASMARR_CONFIG=str(config),ASPNETCORE_URLS='https://127.0.0.1:8789',ASPNETCORE_Kestrel__Certificates__Default__Path=str(cert),ASPNETCORE_Kestrel__Certificates__Default__KeyPath=str(key))
+env=dict(os.environ,ASMARR_STATE=str(state),ASMARR_CONFIG=str(config),ASMARR_PYTHON=sys.executable,ASPNETCORE_URLS='https://127.0.0.1:8789',ASPNETCORE_Kestrel__Certificates__Default__Path=str(cert),ASPNETCORE_Kestrel__Certificates__Default__KeyPath=str(key))
 application=root.parent.parent/'publish'
 process=subprocess.Popen([str(application/'ASMarr')],cwd=application,env=env,stdout=subprocess.DEVNULL)
 def terminate(*args):process.terminate()

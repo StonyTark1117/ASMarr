@@ -33,7 +33,9 @@ public sealed class ProviderProcess(Store store)
 {
     public async Task<JsonElement> Run(string operation,object arguments,CancellationToken ct)
     {
-        var info=new ProcessStartInfo("/usr/bin/python3") { RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,UseShellExecute=false };
+        // Host-owned setting only; never accepted from API/provider arguments.
+        var python=Environment.GetEnvironmentVariable("ASMARR_PYTHON")??"/usr/bin/python3";
+        var info=new ProcessStartInfo(python) { RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,UseShellExecute=false };
         info.ArgumentList.Add(System.IO.Path.Combine(AppContext.BaseDirectory,"providers","bridge.py"));
         info.Environment["ASMARR_STATE"]=store.Root; info.Environment["ASMARR_CONFIG"]=store.ConfigRoot;
         using var p=Process.Start(info) ?? throw new InvalidOperationException("Provider could not start");
