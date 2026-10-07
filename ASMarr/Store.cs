@@ -5,6 +5,7 @@ namespace ASMarr;
 
 public sealed class Store
 {
+    readonly object logLock=new();
     public string Root { get; } = Environment.GetEnvironmentVariable("ASMARR_STATE") ?? "/var/lib/asmarr";
     public string ConfigRoot { get; } = Environment.GetEnvironmentVariable("ASMARR_CONFIG") ?? "/etc/asmarr";
     public string Path => System.IO.Path.Combine(Root, "asmarr.db");
@@ -19,6 +20,7 @@ public sealed class Store
     {
         Directory.CreateDirectory(Root); Directory.CreateDirectory(ConfigRoot);
         Directory.CreateDirectory(System.IO.Path.Combine(Root, "backups"));
+        Directory.CreateDirectory(System.IO.Path.Combine(Root, "logs"));
         using var db = Open(); using var c = db.CreateCommand();
         c.CommandText = """
         PRAGMA journal_mode=WAL;
@@ -67,6 +69,7 @@ public sealed class Store
     public void Log(string level,string message)
     {
         Execute("INSERT INTO logs(at,level,message) VALUES($at,$level,$message)",("at",DateTimeOffset.UtcNow.ToString("O")),("level",level),("message",message));
+        lock(logLock)File.AppendAllText(System.IO.Path.Combine(Root,"logs","asmarr.jsonl"),JsonSerializer.Serialize(new {at=DateTimeOffset.UtcNow,level,message})+"\n");
     }
     public string Enqueue(string name, object arguments)
     {
@@ -79,4 +82,11 @@ public sealed class Store
         string path=System.IO.Path.Combine(Root,"backups",$"asmarr-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}.db");
         using var source=Open(); using var dest=new SqliteConnection($"Data Source={path}"); dest.Open(); source.BackupDatabase(dest); return path;
     }
+    public bool TryAcquireLease(string name,string owner,TimeSpan ttl)
+    {
+        var now=DateTimeOffset.UtcNow;
+        return Execute("INSERT INTO task_locks(name,owner,expires) VALUES($name,$owner,$expiry) ON CONFLICT(name) DO UPDATE SET owner=excluded.owner,expires=excluded.expires WHERE task_locks.expires<$now",("name",name),("owner",owner),("expiry",now.Add(ttl).ToString("O")),("now",now.ToString("O")))==1;
+    }
+    public bool RenewLease(string name,string owner,TimeSpan ttl)=>Execute("UPDATE task_locks SET expires=$expiry WHERE name=$name AND owner=$owner",("name",name),("owner",owner),("expiry",DateTimeOffset.UtcNow.Add(ttl).ToString("O")))==1;
+    public void ReleaseLease(string name,string owner)=>Execute("DELETE FROM task_locks WHERE name=$name AND owner=$owner",("name",name),("owner",owner));
 }

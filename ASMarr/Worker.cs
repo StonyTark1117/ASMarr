@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace ASMarr;
 public sealed class StatusHub:Hub {}
 
-public sealed class Worker(Store store,ProviderProcess providers,IHubContext<StatusHub> hub,ILogger<Worker> logger):BackgroundService
+public sealed class Worker(Store store,ProviderProcess providers,IHubContext<StatusHub> hub,INotificationProvider notifications,ILogger<Worker> logger):BackgroundService
 {
     readonly string owner=Guid.NewGuid().ToString("N");
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -39,15 +39,14 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
         // All provider work shares a renewable database lease. Different task
         // names cannot race discovery, transfer publication or Plex mutations.
         var now=DateTimeOffset.UtcNow;
-        int locked=store.Execute("INSERT INTO task_locks(name,owner,expires) VALUES('providers',$owner,$expiry) ON CONFLICT(name) DO UPDATE SET owner=excluded.owner,expires=excluded.expires WHERE task_locks.expires<$now",("owner",owner),("expiry",now.AddMinutes(2).ToString("O")),("now",now.ToString("O")));
-        if(locked==0)return;
+        if(!store.TryAcquireLease("providers",owner,TimeSpan.FromMinutes(2)))return;
         using var leaseCancel=CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var lease=Task.Run(async()=> { while(!leaseCancel.IsCancellationRequested) { await Task.Delay(30000,leaseCancel.Token); store.Execute("UPDATE task_locks SET expires=$expiry WHERE name='providers' AND owner=$owner",("expiry",DateTimeOffset.UtcNow.AddMinutes(2).ToString("O")),("owner",owner)); } },leaseCancel.Token);
+        var lease=Task.Run(async()=> { while(!leaseCancel.IsCancellationRequested) { await Task.Delay(30000,leaseCancel.Token); if(!store.RenewLease("providers",owner,TimeSpan.FromMinutes(2))){leaseCancel.Cancel();return;} } },leaseCancel.Token);
         store.Execute("UPDATE commands SET state='running',started=$now WHERE id=$id AND state='queued'",("id",id),("now",now.ToString("O")));
         await hub.Clients.All.SendAsync("status",new {id,name,state="running"},ct);
         try
         {
-            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(TimeSpan.FromMinutes(30));
+            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(leaseCancel.Token);timeout.CancelAfter(TimeSpan.FromMinutes(30));
             using var args=JsonDocument.Parse(c["arguments"]!.ToString()!);
             bool shadow=store.Setting("mode","shadow")!="production";
             if(name=="discovery"&&store.Query("SELECT id FROM migration_audits LIMIT 1").Count==0)throw new InvalidOperationException("Complete the migration audit before discovery");
@@ -74,16 +73,21 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             store.Execute("UPDATE commands SET state='completed',result=$result,finished=$now WHERE id=$id",("id",id),("result",json),("now",DateTimeOffset.UtcNow.ToString("O")));
             store.Execute("UPDATE tasks SET last_run=$now,last_result=$result WHERE name=$name",("name",name),("now",DateTimeOffset.UtcNow.ToString("O")),("result",json));
             store.Log("info",name+" completed");
+            if(name=="queue"&&!shadow&&result is JsonElement queueResult&&queueResult.TryGetProperty("saved",out var saved)&&saved.GetArrayLength()>0)
+            {
+                try{await notifications.Notify($"ASMarr imported {saved.GetArrayLength()} recordings.",ct);}catch(Exception){store.Log("warning","Import succeeded; notification delivery failed");}
+            }
         }
         catch(Exception e)
         {
             store.Execute("UPDATE commands SET state='failed',error=$error,finished=$now WHERE id=$id",("id",id),("error",e.Message),("now",DateTimeOffset.UtcNow.ToString("O")));
             store.Log("error",name+": "+e.Message); logger.LogWarning("Command {Name} failed: {Type}",name,e.GetType().Name);
+            if(name is "queue" or "discovery")try{await notifications.Notify($"ASMarr {name} failed. Check System tasks for details.",ct);}catch(Exception){store.Log("warning","Failure notification delivery failed");}
         }
         finally
         {
             leaseCancel.Cancel();try{await lease;}catch(OperationCanceledException){}
-            store.Execute("DELETE FROM task_locks WHERE name='providers' AND owner=$owner",("owner",owner));
+            store.ReleaseLease("providers",owner);
             await hub.Clients.All.SendAsync("status",new {id,name,state="finished"},ct);
         }
     }

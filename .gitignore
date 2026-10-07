@@ -16,3 +16,6 @@ reference/
 **/source-secrets.json
 **/initial-admin.txt
 **/tls.*
+tests/browser/runtime/
+**/test-results/
+**/playwright-report/

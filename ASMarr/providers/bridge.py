@@ -5,6 +5,7 @@ ASP.NET host owns authentication, API, scheduling, locking and durable commands.
 """
 import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -88,6 +89,7 @@ def media_manifest(db):
 
 
 def migrate(db, cfg):
+    if setting(db,'mode','shadow')!='shadow':raise ValueError('migration_requires_shadow_mode')
     backup = STATE / 'backups' / ('legacy-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '.db')
     backup.parent.mkdir(parents=True, exist_ok=True)
     legacy_snapshot(backup)
@@ -162,13 +164,16 @@ def migrate(db, cfg):
 
 def configured_discovery(db,cfg):
     cfg=json.loads(json.dumps(cfg))
-    identities=list(db.execute('SELECT i.*,c.name FROM identities i JOIN creators c ON c.id=i.creator_id WHERE i.enabled=1 AND c.monitored=1'))
+    identities=list(db.execute('SELECT i.*,c.name,c.profile_id FROM identities i JOIN creators c ON c.id=i.creator_id WHERE i.enabled=1 AND c.monitored=1'))
     paused_rows=db.execute('SELECT i.kind,i.handle FROM identities i LEFT JOIN creators c ON c.id=i.creator_id WHERE i.enabled=0 OR c.monitored=0').fetchall()
     paused_reddit={r['handle'].casefold() for r in paused_rows if r['kind']=='reddit'}
     paused_soundgasm={r['handle'].casefold() for r in paused_rows if r['kind']=='soundgasm'}
-    cfg['allowlist']=list(dict.fromkeys([name for name in cfg.get('allowlist',[]) if name.casefold() not in paused_reddit]+[r['handle'] for r in identities if r['kind']=='reddit']))
+    cfg['allowlist']=list(dict.fromkeys([name for name in cfg.get('allowlist',[]) if name.casefold() not in paused_reddit]+[r['handle'] for r in identities if r['kind']=='reddit' and r['profile_id']!=3]))
     sfw_handles={c['soundgasm'].casefold() for c in cfg.get('sfw_expansion',{}).get('creators',[])}|{c['soundgasm'].casefold() for c in core.meta_get(db,'sfw_auto_creators',{}).values()}
     cfg['soundgasm_creators']=list(dict.fromkeys([name for name in cfg.get('soundgasm_creators',[]) if name.casefold() not in paused_soundgasm]+[r['handle'] for r in identities if r['kind']=='soundgasm' and r['handle'].casefold() not in sfw_handles]))
+    unique_handles={}
+    for handle in cfg['soundgasm_creators']:unique_handles.setdefault(handle.casefold(),handle)
+    cfg['soundgasm_creators']=list(unique_handles.values())
     cfg['youtube_channels']=[{'creator':r['name'],'channel_id':r['handle']} for r in identities if r['kind']=='youtube']
     cfg['creator_aliases'].update({r['handle']:r['name'] for r in identities if r['kind']=='reddit'})
     monitored={r['name'] for r in identities}
@@ -181,6 +186,11 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
     started=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
     working=sqlite3.connect(':memory:') if shadow else db
     if shadow:
+        legacy_path=Path(os.environ.get('ASMARR_LEGACY_CODE','/opt/asmr-scraper/scraper.py'))
+        spec=importlib.util.spec_from_file_location('asmarr_legacy_reference',legacy_path)
+        legacy=importlib.util.module_from_spec(spec);sys.modules[spec.name]=legacy;spec.loader.exec_module(legacy)
+        baseline_cfg_path=CONFIG/'legacy-sources.yaml'
+        legacy_cfg=yaml.safe_load(baseline_cfg_path.read_text()) if baseline_cfg_path.exists() else cfg
         db.backup(working); working.row_factory=sqlite3.Row
     before_manifest=media_manifest(db)
     before={r['key'] for r in working.execute('SELECT key FROM assets')}
@@ -237,13 +247,13 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
             if k not in youtube_fixtures: raise core.youtube.YouTubeError('fixture_missing')
             return youtube_fixtures[k]
         core.youtube.listing=replay_listing
-        try: reference_reports=core.discover(reference,cfg,secrets,capture.replay(),selected,inspect=True)
+        try: reference_reports=legacy.discover(reference,legacy_cfg,secrets,capture.replay(),selected,inspect=True)
         finally: core.youtube.listing=original_listing
         reference_proposed=[dict(r) for r in reference.execute('SELECT * FROM assets') if r['key'] not in before]
         compare_fields=['name','status','parsed','pages','accepted','items','rejected','backlog_pending']
         simplified=lambda rs:[{k:r.get(k) for k in compare_fields} for r in rs]
         reference_checkpoints={r['key']:r['value'] for r in reference.execute('SELECT * FROM meta') if ('checkpoint' in r['key'] or '_seen:' in r['key']) and original_meta.get(r['key'])!=r['value']}
-        comparison={'discoveryParity':sorted(proposed,key=lambda r:r['key'])==sorted(reference_proposed,key=lambda r:r['key']),
+        comparison={'legacyImplementationSha256':digest(legacy_path),'discoveryParity':sorted(proposed,key=lambda r:r['key'])==sorted(reference_proposed,key=lambda r:r['key']),
                     'eligibilityAndSourceParity':simplified(reports)==simplified(reference_reports),
                     'checkpointCalculationParity':checkpoint_changes==reference_checkpoints,
                     'productionCheckpointsUnchanged':dict(db.execute('SELECT key,value FROM meta'))==original_meta,
@@ -251,11 +261,14 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
                     'playlistPreviewHealthy':playlists['status'] in {'preview','healthy','disabled'}}
         # Compare playlist calculations against the original database on the same
         # unchanged catalog. No Plex writes are permitted in either calculation.
-        reference_playlists=plex_playlists.sync(reference,cfg,secrets,core,dry_run=True)
+        reference_playlists=plex_playlists.sync(reference,legacy_cfg,secrets,legacy,dry_run=True)
         comparison['playlistCalculationParity']=all(playlists.get(k)==reference_playlists.get(k) for k in ['tracks','categories','tagged','unclassified','status'])
         clean=summary['status']=='healthy' and all(comparison[k] for k in ['discoveryParity','eligibilityAndSourceParity','checkpointCalculationParity','productionCheckpointsUnchanged','mediaUnchanged','playlistPreviewHealthy','playlistCalculationParity'])
         with db:
             db.execute('INSERT INTO shadow_cycles(started,finished,result,clean,comparison) VALUES(?,?,?,?,?)',(started,time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),json.dumps(summary),int(clean),json.dumps(comparison)))
+            for r in working.execute('SELECT * FROM sources'):
+                if r['name'] in {s['name'] for s in reports}:
+                    db.execute('INSERT OR REPLACE INTO sources VALUES(?,?,?,?,?,?)',tuple(r))
         fixture_path=STATE/'fixtures'/('discovery-'+started.replace(':','')+'.json')
         fixture_path.parent.mkdir(mode=0o700,exist_ok=True)
         fixture_path.write_text(json.dumps({'http':capture.entries,'youtube':[[list(k),v] for k,v in youtube_fixtures.items()]}));fixture_path.chmod(0o600)
@@ -351,9 +364,17 @@ def acquire(db,cfg,key):
     row=db.execute('SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=? AND c.monitored=1',(key,)).fetchone()
     if not row: raise ValueError('recording_missing_or_unmonitored')
     if row['state'] not in {'pending','failed','missing'}: return {'status':'already_terminal'}
+    if row['saved_path'] and Path(row['saved_path']).is_file():
+        s=Path(row['saved_path']);root=Path(cfg['output_root']).resolve()
+        if not s.resolve().is_relative_to(root):raise ValueError('existing_path_outside_library')
+        core.validate_audio(s)
+        with db:db.execute("UPDATE assets SET state='complete',error=NULL,retry_after=0 WHERE key=?",(key,))
+        return {'status':'already_imported','path':str(s)}
     rules=profile(db,row)
     effective=dict(cfg,naming_template=setting(db,'naming'),minimum_duration=rules.get('minimumDuration',0),allowed_formats=rules.get('allowedFormats',sorted(ALLOWED)))
-    out,url=core.save_asset(row,effective,core.HTTP())
+    priorities=rules.get('sourcePriorities',['soundgasm','youtube','reddit'])
+    asset=dict(row);asset['targets']=json.dumps(sorted(json.loads(row['targets']),key=lambda t:priorities.index(t[0]) if t[0] in priorities else len(priorities)))
+    out,url=core.save_asset(asset,effective,core.HTTP())
     with db:
         now=int(time.time()); db.execute("UPDATE assets SET saved_path=?,state='complete',acquired=?,error=NULL,retry_after=0 WHERE key=?",(str(out),now,key))
         sid='asset:'+hashlib.sha256(key.encode()).hexdigest()
@@ -524,7 +545,7 @@ def process_queue(db,cfg):
     rows=db.execute("SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE c.monitored=1 AND a.state IN ('pending','failed') AND a.retry_after<=? AND NOT EXISTS(SELECT 1 FROM queue q WHERE q.recording_key=a.key AND q.state NOT IN ('failed','removed')) AND NOT EXISTS(SELECT 1 FROM blocklist b WHERE b.recording_key=a.key AND b.download_id IS NULL) ORDER BY COALESCE(a.published,0) DESC LIMIT ?",(now,cfg.get('max_downloads_per_run',25))).fetchall()
     for row in rows:
         rules=profile(db,row)
-        if row['attempts']>=rules.get('directRetries',3):
+        if not json.loads(row['targets'] or '[]') or row['attempts']>=rules.get('directRetries',3):
             if rules.get('fallback',True):
                 found=search(db,row['key'])
                 candidate=next((c for c in found['candidates'] if c['autoGrab']),None)
@@ -579,6 +600,7 @@ def dispatch(operation,args):
             if kind=='reddit': core.Reddit(core.HTTP(),secrets.get('reddit',{})).authenticate()
             elif kind=='soundgasm': core.sg_listing(core.HTTP(),cfg['soundgasm_creators'][0])
             elif kind=='youtube': core.youtube.listing(cfg['youtube_channels'][0],cfg,1)
+            elif kind=='sfw':core.Reddit(core.HTTP(),secrets.get('reddit',{})).authenticate()
             else: raise ValueError('unknown_source')
             return {'status':'healthy','kind':kind}
         if operation=='playlists':

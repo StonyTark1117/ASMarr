@@ -30,7 +30,7 @@ except KeyError:
     account=pwd.getpwnam('asmarr')
 for folder in ['/etc/asmarr','/var/lib/asmarr','/var/lib/asmarr/backups','/var/lib/asmarr/logs','/var/lib/asmarr/fixtures','/var/lib/asmarr/keys']:
     p=Path(folder);p.mkdir(parents=True,exist_ok=True);p.chmod(0o700);os.chown(p,account.pw_uid,account.pw_gid)
-for source,dest in [('/etc/asmr-scraper/config.yaml','/etc/asmarr/sources.yaml'),('/etc/asmr-scraper/secrets.json','/etc/asmarr/source-secrets.json')]:
+for source,dest in [('/etc/asmr-scraper/config.yaml','/etc/asmarr/sources.yaml'),('/etc/asmr-scraper/config.yaml','/etc/asmarr/legacy-sources.yaml'),('/etc/asmr-scraper/secrets.json','/etc/asmarr/source-secrets.json')]:
     p=Path(dest)
     if not p.exists():shutil.copy2(source,p)
     p.chmod(0o600);os.chown(p,account.pw_uid,account.pw_gid)
