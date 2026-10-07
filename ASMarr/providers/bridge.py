@@ -114,16 +114,18 @@ def migrate(db, cfg):
             path = str(Path(paths[0]).parent.parent if paths and Path(paths[0]).parent.name == 'Singles' else Path(paths[0]).parent) if paths else str(Path(cfg['output_root']) / core.safe_filename(name, 100))
             db.execute('INSERT OR IGNORE INTO creators(name,aliases,path) VALUES(?,?,?)', (name,json.dumps(aliases),path))
         names = {r['name']:r['id'] for r in db.execute('SELECT id,name FROM creators')}
-        def identity(name, kind, handle, profile=1):
+        def identity(name, kind, handle, profile=1, enabled=True):
             canonical = cfg.get('creator_aliases', {}).get(name,name)
             if canonical not in names:
                 # Link migrated source accounts by actual targets/aliases.
                 match = db.execute('SELECT creator FROM assets WHERE url LIKE ? LIMIT 1', ('https://soundgasm.net/u/' + handle + '/%',)).fetchone() if kind == 'soundgasm' else None
                 canonical = match[0] if match else canonical
             if canonical in names:
-                db.execute('INSERT OR IGNORE INTO identities(creator_id,kind,handle) VALUES(?,?,?)', (names[canonical],kind,handle))
+                db.execute('INSERT OR IGNORE INTO identities(creator_id,kind,handle,enabled) VALUES(?,?,?,?)', (names[canonical],kind,handle,int(enabled)))
                 if profile != 1:
                     db.execute('UPDATE creators SET profile_id=? WHERE id=?', (profile,names[canonical]))
+            elif not db.execute('SELECT id FROM identities WHERE creator_id IS NULL AND kind=? AND handle=?',(kind,handle)).fetchone():
+                db.execute('INSERT INTO identities(creator_id,kind,handle,enabled) VALUES(NULL,?,?,?)',(kind,handle,int(enabled)))
         for name in cfg.get('allowlist',[]): identity(name,'reddit',name)
         for name in cfg.get('soundgasm_creators',[]): identity(name,'soundgasm',name)
         for c in cfg.get('youtube_channels',[]): identity(c['creator'],'youtube',c['channel_id'],2)
@@ -134,7 +136,12 @@ def migrate(db, cfg):
         # Derive any linked Soundgasm identity absent from static configuration.
         for r in db.execute('SELECT DISTINCT creator,url FROM assets WHERE url LIKE ?',( 'https://soundgasm.net/u/%',)).fetchall():
             parts=urllib.parse.unquote(urllib.parse.urlparse(r['url']).path).split('/')
-            if len(parts)>2: identity(r['creator'],'soundgasm',parts[2])
+            if len(parts)>2: identity(r['creator'],'soundgasm',parts[2],enabled=False)
+        if not core.meta_get(db,'identity_migration_v2',False):
+            configured_handles={x.casefold() for x in cfg.get('soundgasm_creators',[])}|{c['soundgasm'].casefold() for c in sfw}
+            for r in db.execute("SELECT id,handle FROM identities WHERE kind='soundgasm'").fetchall():
+                if r['handle'].casefold() not in configured_handles:db.execute('UPDATE identities SET enabled=0 WHERE id=?',(r['id'],))
+            core.meta_set(db,'identity_migration_v2',True)
     counts = dict(db.execute('SELECT state,count(*) FROM assets GROUP BY state'))
     legacy_counts = dict(db.execute('SELECT state,count(*) FROM legacy.assets GROUP BY state'))
     mismatch = db.execute('SELECT count(*) FROM legacy.assets a LEFT JOIN assets b ON a.key=b.key WHERE b.key IS NULL OR a.saved_path IS NOT b.saved_path OR a.state IS NOT b.state').fetchone()[0]
@@ -156,8 +163,12 @@ def migrate(db, cfg):
 def configured_discovery(db,cfg):
     cfg=json.loads(json.dumps(cfg))
     identities=list(db.execute('SELECT i.*,c.name FROM identities i JOIN creators c ON c.id=i.creator_id WHERE i.enabled=1 AND c.monitored=1'))
-    cfg['allowlist']=[r['handle'] for r in identities if r['kind']=='reddit']
-    cfg['soundgasm_creators']=[r['handle'] for r in identities if r['kind']=='soundgasm' and r['handle'] in cfg.get('soundgasm_creators',[])]
+    paused_rows=db.execute('SELECT i.kind,i.handle FROM identities i LEFT JOIN creators c ON c.id=i.creator_id WHERE i.enabled=0 OR c.monitored=0').fetchall()
+    paused_reddit={r['handle'].casefold() for r in paused_rows if r['kind']=='reddit'}
+    paused_soundgasm={r['handle'].casefold() for r in paused_rows if r['kind']=='soundgasm'}
+    cfg['allowlist']=list(dict.fromkeys([name for name in cfg.get('allowlist',[]) if name.casefold() not in paused_reddit]+[r['handle'] for r in identities if r['kind']=='reddit']))
+    sfw_handles={c['soundgasm'].casefold() for c in cfg.get('sfw_expansion',{}).get('creators',[])}|{c['soundgasm'].casefold() for c in core.meta_get(db,'sfw_auto_creators',{}).values()}
+    cfg['soundgasm_creators']=list(dict.fromkeys([name for name in cfg.get('soundgasm_creators',[]) if name.casefold() not in paused_soundgasm]+[r['handle'] for r in identities if r['kind']=='soundgasm' and r['handle'].casefold() not in sfw_handles]))
     cfg['youtube_channels']=[{'creator':r['name'],'channel_id':r['handle']} for r in identities if r['kind']=='youtube']
     cfg['creator_aliases'].update({r['handle']:r['name'] for r in identities if r['kind']=='reddit'})
     monitored={r['name'] for r in identities}
@@ -177,6 +188,10 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
     selected=['reddit','soundgasm','youtube','sfw'] if kind=='all' else [kind]
     selected=[k for k in selected if setting(db,'source.'+k+'.enabled','true')=='true']
     active=configured_discovery(db,cfg)
+    def profile_rules(creator):
+        name=active.get('creator_aliases',{}).get(creator,creator)
+        return dict(active, **{k:v for k,v in profile(db,{'creator':name}).items() if k in {'hypno_required','hypno_keywords','fantasy_blocklist'}})
+    active['_profile_rules']=profile_rules
     original_enqueue=core.enqueue
     original_listing=core.youtube.listing
     capture=CaptureHTTP()
@@ -188,7 +203,17 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
     core.youtube.listing=listing
     monitored={r['name'] for r in db.execute('SELECT name FROM creators WHERE monitored=1')}
     def monitored_enqueue(conn,sid,source,creator,title,options,published=0):
-        if creator not in monitored: return 'creator_unmonitored'
+        if creator not in monitored:
+            configured=set(active.get('allowlist',[]))|set(active.get('soundgasm_creators',[]))
+            automatic=core.meta_get(conn,'sfw_auto_creators',{})
+            qualified=next((c for c in automatic.values() if c['creator']==creator),None)
+            if conn.execute('SELECT id FROM creators WHERE name=?',(creator,)).fetchone():return 'creator_unmonitored'
+            if creator not in configured and not qualified:return 'creator_unmonitored'
+            conn.execute('INSERT INTO creators(name,path,profile_id) VALUES(?,?,?)',(creator,str(Path(cfg['output_root'])/core.safe_filename(creator,100)),3 if qualified else 1))
+            creator_id=conn.execute('SELECT id FROM creators WHERE name=?',(creator,)).fetchone()[0]
+            if qualified:
+                for k,h in [('reddit',qualified['reddit']),('soundgasm',qualified['soundgasm'])]:conn.execute('INSERT OR IGNORE INTO identities(creator_id,kind,handle) VALUES(?,?,?)',(creator_id,k,h))
+            monitored.add(creator)
         return original_enqueue(conn,sid,source,creator,title,options,published)
     core.enqueue=monitored_enqueue
     try:
@@ -326,7 +351,9 @@ def acquire(db,cfg,key):
     row=db.execute('SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=? AND c.monitored=1',(key,)).fetchone()
     if not row: raise ValueError('recording_missing_or_unmonitored')
     if row['state'] not in {'pending','failed','missing'}: return {'status':'already_terminal'}
-    out,url=core.save_asset(row,cfg,core.HTTP())
+    rules=profile(db,row)
+    effective=dict(cfg,naming_template=setting(db,'naming'),minimum_duration=rules.get('minimumDuration',0),allowed_formats=rules.get('allowedFormats',sorted(ALLOWED)))
+    out,url=core.save_asset(row,effective,core.HTTP())
     with db:
         now=int(time.time()); db.execute("UPDATE assets SET saved_path=?,state='complete',acquired=?,error=NULL,retry_after=0 WHERE key=?",(str(out),now,key))
         sid='asset:'+hashlib.sha256(key.encode()).hexdigest()
@@ -431,7 +458,7 @@ def import_audio(db,cfg,key,path):
     asset=db.execute('SELECT * FROM assets WHERE key=?',(key,)).fetchone()
     if not asset:raise ValueError('recording_not_found')
     if asset['state']=='complete' and asset['saved_path'] and Path(asset['saved_path']).is_file():return {'status':'already_imported','path':asset['saved_path']}
-    source=Path(path).resolve();download_root=Path('/mnt/downloads/asmarr').resolve()
+    source=Path(path).resolve();download_root=Path(cfg.get('download_root','/mnt/downloads/asmarr')).resolve()
     if not source.is_relative_to(download_root):raise ValueError('import_path_outside_download_root')
     if source.suffix.lower() not in ALLOWED or not source.is_file():raise ValueError('unsupported_import_file')
     settings=profile(db,asset)

@@ -12,6 +12,8 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
         // A terminated process cannot resume an executing command. Retain an
         // interrupted record for explicit retry rather than replaying a mutation.
         store.Execute("UPDATE commands SET state='interrupted',finished=$now,error='Service restarted during execution' WHERE state='running'",("now",DateTimeOffset.UtcNow.ToString("O")));
+        if(store.Query("SELECT key FROM assets LIMIT 1").Count==0&&File.Exists(System.IO.Path.Combine(store.ConfigRoot,"sources.yaml"))&&store.Query("SELECT id FROM commands WHERE name='migration' AND state='queued'").Count==0)
+            store.Enqueue("migration",new {});
         while(!stoppingToken.IsCancellationRequested)
         {
             try
@@ -48,6 +50,7 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(TimeSpan.FromMinutes(30));
             using var args=JsonDocument.Parse(c["arguments"]!.ToString()!);
             bool shadow=store.Setting("mode","shadow")!="production";
+            if(name=="discovery"&&store.Query("SELECT id FROM migration_audits LIMIT 1").Count==0)throw new InvalidOperationException("Complete the migration audit before discovery");
             object result=name switch
             {
                 "migration" => await providers.Run("migrate",new {},timeout.Token),

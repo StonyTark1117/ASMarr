@@ -412,7 +412,8 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
     allow = {a.casefold() for a in cfg.get('allowlist', [])}
     def accept(report, sid, creator, title, options, published=0, haystack=None,
                trusted=False, topic_pattern=None):
-        ok, reason = title_passes(haystack or title, cfg, trusted, topic_pattern)
+        rules = cfg.get('_profile_rules', lambda creator: cfg)(creator)
+        ok, reason = title_passes(haystack or title, rules, trusted, topic_pattern)
         if not ok:
             report['rejected'][reason] += 1
             return
@@ -608,6 +609,18 @@ def save_asset(asset, cfg, http):
     folder.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(asset['key'].encode()).hexdigest()[:16]
     base = safe_filename(compact_title(asset['title'])[0], 110) + ' [' + digest + ']'
+    def destination(ext):
+        template = cfg.get('naming_template', '{Creator}/Singles/{Title} [{SourceId}].{ext}')
+        values = {'Creator': safe_filename(asset['creator'], 100),
+                  'Title': safe_filename(compact_title(asset['title'])[0], 110), 'SourceId': digest, 'ext': ext.lstrip('.')}
+        if set(re.findall(r'\{([^{}]+)\}', template)) - set(values):
+            raise MediaError('unknown_naming_token')
+        for key, value in values.items(): template = template.replace('{' + key + '}', value)
+        path = root / template
+        if not path.resolve().is_relative_to(root) or path.resolve() == root:
+            raise MediaError('naming_path_outside_library')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
     last_error = None
     for kind, url in json.loads(asset['targets']):
         tmp = None
@@ -615,7 +628,7 @@ def save_asset(asset, cfg, http):
             if kind == 'youtube':
                 if not cfg.get('youtube_enabled', False):
                     raise MediaError('youtube_disabled')
-                out = folder / (base + '.m4a')
+                out = destination('.m4a')
                 if out.exists():
                     data = validate_audio(out)
                     if any(s.get('codec_type') == 'video' for s in data['streams']):
@@ -646,7 +659,9 @@ def save_asset(asset, cfg, http):
                 ext = Path(urlparse(media).path).suffix.lower()
                 if ext not in AUDIO_EXTS:
                     raise MediaError('unsupported_media_extension')
-                out = folder / (base + ext)
+                if ext not in cfg.get('allowed_formats', AUDIO_EXTS):
+                    raise MediaError('profile_format_rejected')
+                out = destination(ext)
                 tmp = out.with_name(out.name + '.part')
                 # A crash after atomic publication but before commit is recoverable.
                 if out.exists():
@@ -662,7 +677,11 @@ def save_asset(asset, cfg, http):
                         f.write(chunk)
                     f.flush()
                     os.fsync(f.fileno())
-            validate_audio(tmp)
+            validation = validate_audio(tmp)
+            if any(s.get('codec_type') == 'video' for s in validation.get('streams', [])):
+                raise MediaError('output_contains_video')
+            if float(validation['format']['duration']) < cfg.get('minimum_duration', 0):
+                raise MediaError('profile_duration_rejected')
             tag_audio(tmp, asset['creator'], asset['title'], asset['published'])
             validate_audio(tmp)
             os.chmod(tmp, 0o644)
