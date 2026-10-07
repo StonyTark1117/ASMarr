@@ -1131,3 +1131,36 @@ footer > span {
     font-size: 9px;
   }
 }
+/* Independent audio/video state and backfill controls. */
+.media-statuses,
+.monitor-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+.media-statuses > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.monitor-controls > label {
+  margin: 0;
+}
+.backfill-progress {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+.backfill-progress > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.backfill-progress progress {
+  width: 100%;
+}

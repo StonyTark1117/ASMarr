@@ -38,6 +38,16 @@ public sealed class Store
         CREATE TABLE IF NOT EXISTS media_assets(recording_key TEXT NOT NULL REFERENCES assets(key) ON DELETE CASCADE,media_kind TEXT NOT NULL CHECK(media_kind IN ('Audio','Video')),wanted INTEGER NOT NULL DEFAULT 1,state TEXT NOT NULL DEFAULT 'wanted',saved_path TEXT,source_url TEXT,provider_id TEXT,attempts INTEGER NOT NULL DEFAULT 0,retry_after INTEGER NOT NULL DEFAULT 0,error TEXT,acquired INTEGER,details TEXT NOT NULL DEFAULT '{}',PRIMARY KEY(recording_key,media_kind));
         CREATE TABLE IF NOT EXISTS video_candidates(id INTEGER PRIMARY KEY,recording_key TEXT NOT NULL REFERENCES assets(key) ON DELETE CASCADE,provider TEXT NOT NULL,provider_id TEXT,url TEXT NOT NULL,normalized_url TEXT NOT NULL,fingerprint TEXT,resolution INTEGER,source_quality INTEGER NOT NULL DEFAULT 0,bitrate INTEGER NOT NULL DEFAULT 0,video_codec TEXT,audio_codec TEXT,container TEXT,requires_transcode INTEGER NOT NULL DEFAULT 0,interactive_only INTEGER NOT NULL DEFAULT 0,details TEXT NOT NULL DEFAULT '{}',UNIQUE(provider,provider_id),UNIQUE(normalized_url));
         CREATE TABLE IF NOT EXISTS backfill_jobs(id TEXT PRIMARY KEY,creator_id INTEGER NOT NULL REFERENCES creators(id),media_kind TEXT NOT NULL,state TEXT NOT NULL,discovered INTEGER NOT NULL DEFAULT 0,eligible INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0,cursor TEXT,started TEXT NOT NULL,updated TEXT NOT NULL,finished TEXT,error TEXT);
+        CREATE TRIGGER IF NOT EXISTS assets_media_audio_insert AFTER INSERT ON assets BEGIN
+          INSERT OR IGNORE INTO media_assets(recording_key,media_kind,wanted,state,saved_path,attempts,retry_after,error,acquired)
+          VALUES(NEW.key,'Audio',CASE WHEN NEW.state='suppressed' THEN 0 ELSE 1 END,CASE NEW.state WHEN 'pending' THEN 'wanted' ELSE NEW.state END,NEW.saved_path,NEW.attempts,NEW.retry_after,NEW.error,NEW.acquired);
+        END;
+        CREATE TRIGGER IF NOT EXISTS assets_media_audio_update AFTER UPDATE OF state,saved_path,attempts,retry_after,error,acquired ON assets BEGIN
+          UPDATE media_assets SET wanted=CASE WHEN NEW.state='suppressed' THEN 0 ELSE wanted END,
+            state=CASE NEW.state WHEN 'pending' THEN 'wanted' ELSE NEW.state END,saved_path=NEW.saved_path,
+            attempts=NEW.attempts,retry_after=NEW.retry_after,error=NEW.error,acquired=NEW.acquired
+          WHERE recording_key=NEW.key AND media_kind='Audio';
+        END;
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,name TEXT NOT NULL,arguments TEXT NOT NULL,state TEXT NOT NULL,created TEXT NOT NULL,started TEXT,finished TEXT,result TEXT,error TEXT);
         CREATE TABLE IF NOT EXISTS tasks(name TEXT PRIMARY KEY,interval_seconds INTEGER NOT NULL,next_run TEXT NOT NULL,last_run TEXT,last_result TEXT,enabled INTEGER NOT NULL DEFAULT 1);

@@ -57,6 +57,38 @@ test("creator monitoring, identity detail and mass editing", async ({
       return (await r.json()).every((c: any) => c.monitored === 1);
     })
     .toBe(true);
+  await page.getByRole("button", { name: "Quiet Creator", exact: true }).click();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("complete known history");
+    await dialog.accept();
+  });
+  await page.getByLabel("Monitor Videos", { exact: true }).click();
+  await expect(page.getByLabel("Monitor Videos", { exact: true })).toBeChecked();
+  await expect(page.getByLabel("Video quality profile")).toHaveValue("1");
+  await expect
+    .poll(async () => {
+      const creators = await request.get("/api/v1/creators", {
+        headers: { "X-Api-Key": auth().apiKey },
+      });
+      return (await creators.json()).find((c: any) => c.id === 1)?.monitor_video;
+    })
+    .toBe(1);
+  await expect
+    .poll(async () => {
+      const commands = await request.get("/api/v1/commands", {
+        headers: { "X-Api-Key": auth().apiKey },
+      });
+      return (await commands.json()).some(
+        (c: any) => c.name === "video-backfill" && ["completed", "failed"].includes(c.state),
+      );
+    })
+    .toBe(true);
+  await page.getByRole("button", { name: "Videos", exact: true }).click();
+  const videoTabs = page.locator(".tabs");
+  await expect(videoTabs.getByRole("button", { name: "Wanted", exact: true })).toBeVisible();
+  await expect(videoTabs.getByRole("button", { name: "Queue", exact: true })).toBeVisible();
+  await expect(videoTabs.getByRole("button", { name: "History", exact: true })).toBeVisible();
+  await expect(page.getByText("Visual copies are tracked independently from audio.")).toBeVisible();
 });
 test("wanted recording details and interactive search submission", async ({
   page,

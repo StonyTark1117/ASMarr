@@ -24,6 +24,7 @@ import {
   AlertCircle,
   Download,
   Clock,
+  Clapperboard,
 } from "lucide-react";
 import "./style.css";
 
@@ -32,6 +33,7 @@ const routes = [
   ["Dashboard", Activity],
   ["Creators", Users],
   ["Recordings", Headphones],
+  ["Videos", Clapperboard],
   ["Wanted", Search],
   ["Queue", ListMusic],
   ["History", History],
@@ -120,6 +122,8 @@ function App() {
     [username, setUsername] = useState("admin"),
     [password, setPassword] = useState(""),
     [candidates, setCandidates] = useState<Row[] | null>(null),
+    [candidateKind, setCandidateKind] = useState("Audio"),
+    [videoProfiles, setVideoProfiles] = useState<Row[]>([]),
     [form, setForm] = useState(""),
     [integration, setIntegration] = useState("prowlarr");
   useEffect(() => {
@@ -135,6 +139,7 @@ function App() {
       .configureLogging(LogLevel.Error)
       .build();
     hub.on("status", () => setTick((n) => n + 1));
+    hub.on("assetState", () => setTick((n) => n + 1));
     hub.onreconnecting(() => setLive(false));
     hub.onreconnected(() => setLive(true));
     hub.onclose(() => setLive(false));
@@ -157,6 +162,12 @@ function App() {
         Dashboard: "system/status",
         Creators: "creators",
         Recordings: "recordings?limit=1000",
+        Videos:
+          tab === "Queue"
+            ? "video/queue"
+            : tab === "History"
+              ? "video/history"
+              : "video/wanted",
         Wanted: "wanted",
         Queue: "queue",
         History: "history",
@@ -166,7 +177,7 @@ function App() {
             ? "connectors"
             : tab === "Profiles"
               ? "profiles"
-              : tab === "General"
+              : tab === "General" || tab === "Video"
                 ? "settings"
                 : tab === "Integrations"
                   ? "integrations"
@@ -201,6 +212,10 @@ function App() {
       current = false;
     };
   }, [auth, page, tab, tick]);
+  useEffect(() => {
+    if (!auth) return;
+    api("video/profiles").then(setVideoProfiles).catch(() => {});
+  }, [auth, tick]);
   const notify = (s: string) => {
     setToast(s);
     setTimeout(() => setToast(""), 6000);
@@ -228,7 +243,7 @@ function App() {
     setCandidates(null);
     setQuery("");
     setSelected([]);
-    setTab(p === "System" ? "Tasks" : "Sources");
+    setTab(p === "System" ? "Tasks" : p === "Videos" ? "Wanted" : "Sources");
   };
   const openCreator = async (c: Row) => {
     const d = await act("creators/" + c.id, "GET");
@@ -244,9 +259,12 @@ function App() {
       setCandidates(null);
     }
   };
-  const search = async () => {
+  const search = async (mediaKind = "Audio") => {
     if (!recording) return;
-    const c = await command("search", { key: recording.recording.key });
+    const c = await command("search", {
+      key: recording.recording.key,
+      mediaKind,
+    });
     if (!c) return;
     notify("Searching configured indexers…");
     for (let i = 0; i < 45; i++) {
@@ -259,6 +277,7 @@ function App() {
       if (result.state === "completed") {
         const d = JSON.parse(result.result);
         setCandidates(d.candidates);
+        setCandidateKind(mediaKind);
         notify(
           d.status === "not_configured"
             ? "Configure Prowlarr in Settings to search."
@@ -286,7 +305,44 @@ function App() {
       profileId: c.profile_id,
       tags: JSON.parse(c.tags || "[]"),
     });
-    if (creator) await openCreator(c);
+  };
+  const updateVideo = async (
+    c: Row,
+    monitorVideo: boolean,
+    videoQualityProfileId = c.video_quality_profile_id || 1,
+  ) => {
+    if (monitorVideo && !c.monitor_video) {
+      const preview = await api(`creators/${c.id}/video-backfill-preview`);
+      if (
+        !window.confirm(
+          `Enable video monitoring? ASMarr will scan the creator's complete known history. ${preview.knownCandidates} candidates are already known.`,
+        )
+      )
+        return;
+    }
+    if (creator) {
+      setCreator({
+        ...creator,
+        creator: {
+          ...creator.creator,
+          monitor_video: monitorVideo ? 1 : 0,
+          video_quality_profile_id: videoQualityProfileId,
+        },
+      });
+    }
+    await act(`creators/${c.id}`, "PUT", {
+      monitored: !!c.monitored,
+      profileId: c.profile_id,
+      tags: JSON.parse(c.tags || "[]"),
+      monitorVideo,
+      videoQualityProfileId,
+    });
+    await openCreator(c);
+    notify(
+      monitorVideo
+        ? "Full-history video scan queued"
+        : "Future video discovery stopped; imported files were retained",
+    );
   };
   const recordingTable = (rows: Row[]) =>
     rows.length ? (
@@ -297,7 +353,8 @@ function App() {
               <th>Recording</th>
               <th>Creator</th>
               <th>Source</th>
-              <th>Status</th>
+              <th>Audio</th>
+              <th>Video</th>
               <th>Date</th>
             </tr>
           </thead>
@@ -317,9 +374,8 @@ function App() {
                       {r.source?.split(":")[0]}
                     </span>
                   </td>
-                  <td>
-                    <Badge value={r.state} />
-                  </td>
+                  <td><Badge value={r.media_kind === "Audio" ? r.media_state : r.audio_state || r.state} /></td>
+                  <td><Badge value={r.media_kind === "Video" ? r.media_state : r.video_state || "not monitored"} /></td>
                   <td className="muted">{when(r.published || r.acquired)}</td>
                 </tr>
               ))}
@@ -551,7 +607,13 @@ function App() {
                 <div>
                   <h2>{recording.recording.title}</h2>
                   <p>{recording.recording.creator}</p>
-                  <Badge value={recording.recording.state} />
+                  <div className="media-statuses">
+                    {(recording.media || []).map((m: Row) => (
+                      <span key={m.media_kind}>
+                        <b>{m.media_kind}</b> <Badge value={m.state} />
+                      </span>
+                    ))}
+                  </div>
                   <p className="muted">
                     {recording.recording.source} ·{" "}
                     {when(
@@ -565,8 +627,11 @@ function App() {
                 </div>
               </div>
               <div className="toolbar">
-                <button className="primary" onClick={search}>
+                <button className="primary" onClick={() => search("Audio")}>
                   <Search size={16} /> Interactive search
+                </button>
+                <button onClick={() => search("Video")}>
+                  <Clapperboard size={16} /> Search video
                 </button>
                 <button
                   onClick={() =>
@@ -611,14 +676,17 @@ function App() {
               )}
               {candidates && (
                 <section className="panel">
-                  <h2>Search results</h2>
+                  <h2>{candidateKind} search results</h2>
+                  {candidateKind === "Video" && (
+                    <p className="muted">Prowlarr video releases are manual-only and are never automatically grabbed.</p>
+                  )}
                   {candidates.length ? (
                     <table>
                       <thead>
                         <tr>
                           <th>Release</th>
                           <th>Indexer</th>
-                          <th>Confidence</th>
+                          <th>{candidateKind === "Video" ? "Resolution" : "Confidence"}</th>
                           <th></th>
                         </tr>
                       </thead>
@@ -627,7 +695,7 @@ function App() {
                           <tr key={i}>
                             <td>{c.title}</td>
                             <td>{c.indexer}</td>
-                            <td>{Math.round(c.confidence * 100)}%</td>
+                            <td>{candidateKind === "Video" ? (c.resolution ? `${c.resolution}p` : "Unknown") : `${Math.round(c.confidence * 100)}%`}</td>
                             <td>
                               <button
                                 disabled={status.mode === "shadow"}
@@ -635,6 +703,7 @@ function App() {
                                   command("grab", {
                                     key: recording.recording.key,
                                     candidate: c,
+                                    mediaKind: candidateKind,
                                   })
                                 }
                               >
@@ -669,17 +738,43 @@ function App() {
               <section className="panel">
                 <div className="section-heading">
                   <h2>Linked identities</h2>
-                  <label className="switch-label">
-                    <input
-                      type="checkbox"
-                      checked={!!creator.creator.monitored}
-                      onChange={(e) =>
-                        toggle(creator.creator, e.target.checked)
-                      }
-                    />{" "}
-                    Monitored
-                  </label>
+                  <div className="monitor-controls">
+                    <label className="switch-label">
+                      <input
+                        aria-label="Monitored"
+                        type="checkbox"
+                        checked={!!creator.creator.monitored}
+                        onChange={(e) => toggle(creator.creator, e.target.checked)}
+                      />{" "}Monitor audio
+                    </label>
+                    <label className="switch-label">
+                      <input
+                        aria-label="Monitor Videos"
+                        type="checkbox"
+                        checked={!!creator.creator.monitor_video}
+                        onChange={(e) => updateVideo(creator.creator, e.target.checked)}
+                      />{" "}Monitor Videos
+                    </label>
+                    <label>
+                      Video quality
+                      <select
+                        aria-label="Video quality profile"
+                        value={creator.creator.video_quality_profile_id || 1}
+                        disabled={!creator.creator.monitor_video}
+                        onChange={(e) => updateVideo(creator.creator, true, Number(e.target.value))}
+                      >
+                        {videoProfiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </label>
+                  </div>
                 </div>
+                {creator.backfill && (
+                  <div className="backfill-progress">
+                    <div><b>Full-history video scan</b><Badge value={creator.backfill.state} /></div>
+                    <progress value={creator.backfill.eligible || 0} max={Math.max(creator.backfill.total || 1, 1)} />
+                    <span>{creator.backfill.eligible || 0} eligible · {creator.backfill.discovered || 0} inspected</span>
+                  </div>
+                )}
                 {creator.identities.map((i: Row) => (
                   <div className="source-row" key={i.id}>
                     <Radio size={17} />
@@ -955,7 +1050,7 @@ function App() {
                             {c.name}
                           </button>
                           <div>
-                            <span>{c.completed || 0} collected</span>
+                            <span>{c.audio_completed || 0} audio · {c.video_completed || 0} video</span>
                             <label title="Toggle monitoring">
                               <input
                                 type="checkbox"
@@ -971,6 +1066,43 @@ function App() {
                       </article>
                     ))}
               </div>
+            </>
+          ) : page === "Videos" ? (
+            <>
+              <div className="tabs">
+                {["Wanted", "Queue", "History"].map((t) => (
+                  <button className={tab === t ? "active" : ""} onClick={() => setTab(t)} key={t}>{t}</button>
+                ))}
+              </div>
+              <div className="toolbar">
+                <span className="muted">Visual copies are tracked independently from audio.</span>
+                {tab === "Wanted" && (
+                  <button disabled={status.mode === "shadow"} onClick={() => command("video-queue")}>
+                    <Play size={15} /> Process one video
+                  </button>
+                )}
+                <button onClick={() => command("plex-video-verify")}><Radio size={15} /> Validate Plex video library</button>
+              </div>
+              {tab === "Wanted" && Array.isArray(data) && recordingTable(data)}
+              {tab === "Queue" && (
+                <>
+                  {data?.backfills?.map((job: Row) => (
+                    <div className="source-row" key={job.id}><RefreshCw size={16}/><b>History scan</b><Badge value={job.state}/><span>{job.eligible} eligible / {job.discovered} inspected</span></div>
+                  ))}
+                  {data?.direct && recordingTable(data.direct)}
+                  {data?.downloads?.map((job: Row) => (
+                    <div className="source-row" key={job.id}><Download size={16}/><b>{job.provider}</b><Badge value={job.state}/></div>
+                  ))}
+                </>
+              )}
+              {tab === "History" && (
+                <>
+                  {data?.backfills?.map((job: Row) => (
+                    <div className="source-row" key={job.id}><Clock size={16}/><b>Full-history scan</b><Badge value={job.state}/><span>{when(job.finished || job.updated)}</span></div>
+                  ))}
+                  {data?.assets && recordingTable(data.assets)}
+                </>
+              )}
             </>
           ) : page === "Recordings" || page === "Wanted" ? (
             <>
@@ -1104,6 +1236,7 @@ function App() {
                   "Sources",
                   "Profiles",
                   "General",
+                  "Video",
                   "Integrations",
                   "Authentication",
                 ].map((t) => (
@@ -1244,6 +1377,40 @@ function App() {
                       </section>
                     ))}
                 </>
+              ) : tab === "Video" ? (
+                <>
+                  <section className="panel">
+                    <h2>Video storage & transfers</h2>
+                    <p className="muted">Use a dedicated Plex Other Videos library. Video transfers default to one at a time and pause below the free-space threshold.</p>
+                    {Array.isArray(data) && data
+                      .filter((s: Row) => s.key.startsWith("video."))
+                      .map((s: Row) => (
+                        <form className="setting-form" key={s.key} onSubmit={(e) => {
+                          e.preventDefault(); const f = new FormData(e.currentTarget);
+                          act("settings/" + s.key, "PUT", { value: f.get("value") });
+                          notify("Video setting saved");
+                        }}>
+                          <label>{s.key}<input name="value" defaultValue={s.value} /></label>
+                          <button>Save</button>
+                        </form>
+                      ))}
+                    <button onClick={() => command("plex-video-verify")}><Radio size={15}/> Validate dedicated Plex library</button>
+                  </section>
+                  <section className="panel">
+                    <h2>Video quality profiles</h2>
+                    {videoProfiles.map((p) => (
+                      <form className="setting-form" key={p.id} onSubmit={(e) => {
+                        e.preventDefault(); const f = new FormData(e.currentTarget);
+                        act(`video/profiles/${p.id}`, "PUT", {name: f.get("name"), resolution: f.get("resolution"), settings: JSON.parse(p.settings || "{}")});
+                        notify("Video profile saved");
+                      }}>
+                        <label>Name<input name="name" defaultValue={p.name}/></label>
+                        <label>Resolution<select name="resolution" defaultValue={p.resolution}>{["Any","2160p","1440p","1080p","720p","480p"].map(r => <option key={r}>{r}</option>)}</select></label>
+                        <button>Save</button>
+                      </form>
+                    ))}
+                  </section>
+                </>
               ) : tab === "General" ? (
                 <section className="panel">
                   <h2>Library & naming</h2>
@@ -1367,7 +1534,7 @@ function App() {
                             : integration === "qbittorrent"
                               ? '{"url":"http://localhost:8080","username":"…","password":"…","retention":"remove-torrent"}'
                               : integration === "plex"
-                                ? '{"url":"http://plex:32400","section_id":4,"token":"…"}'
+                                ? '{"url":"http://plex:32400","section_id":4,"video":{"section_id":9},"token":"…"}'
                                 : '{"webhook":"https://…","discord":"https://discord.com/api/webhooks/…"}'
                         }
                         value={form}
