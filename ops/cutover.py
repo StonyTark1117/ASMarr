@@ -76,12 +76,12 @@ def apply():
             transition.chmod(0o600);json.dump(saved,output)
         db.execute("UPDATE settings SET value='production' WHERE key='mode'")
         db.execute('UPDATE tasks SET enabled=0')
-    subprocess.run(['setfacl','-R','-m','u:asmarr:rwX','/mnt/cephfs/media/asmr','/mnt/downloads/asmarr'],check=True)
-    dirs=subprocess.run(['find','/mnt/cephfs/media/asmr','-type','d','-print0'],capture_output=True,check=True).stdout
+    subprocess.run(['setfacl','-R','-m','u:asmarr:rwX','/mnt/cephfs/media/asmr','/mnt/cephfs/media/asmr-video','/mnt/downloads/asmarr'],check=True)
+    dirs=subprocess.run(['find','/mnt/cephfs/media/asmr','/mnt/cephfs/media/asmr-video','-type','d','-print0'],capture_output=True,check=True).stdout
     for folder in dirs.split(b'\0'):
         if folder:subprocess.run(['setfacl','-m','d:u:asmarr:rwx',os.fsdecode(folder)],check=True)
     PRODUCTION_OVERRIDE.parent.mkdir(exist_ok=True)
-    PRODUCTION_OVERRIDE.write_text('[Service]\nReadOnlyPaths=\nReadWritePaths=/mnt/cephfs/media/asmr /mnt/downloads/asmarr\n')
+    PRODUCTION_OVERRIDE.write_text('[Service]\nReadOnlyPaths=\nReadWritePaths=/mnt/cephfs/media/asmr /mnt/cephfs/media/asmr-video /mnt/downloads/asmarr\n')
     config=Path('/etc/asmarr/sources.yaml');cfg=yaml.safe_load(config.read_text());original_limit=cfg.get('max_downloads_per_run',25)
     cfg['max_downloads_per_run']=1;config.write_text(yaml.safe_dump(cfg))
     try:

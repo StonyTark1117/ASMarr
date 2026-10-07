@@ -43,6 +43,9 @@ class Plex:
                     track.remove(child)
                 for name in sorted((old - removed) | added):
                     E.SubElement(track, 'Mood', tag=name)
+                field=next((f for f in track.findall('Field') if f.get('name')=='mood'),None)
+                if field is None:field=E.SubElement(track,'Field',name='mood')
+                field.set('locked',str(params['mood.locked']))
             return container([])
         if path.startswith('/library/metadata/'):
             return container([self.tracks[k] for k in path.split('/')[-1].split(',')])
@@ -126,6 +129,28 @@ class PlaylistTests(unittest.TestCase):
         self.assertEqual(result['status'], 'preview')
         self.assertEqual(plex.writes, [])
         self.assertEqual(self.db.total_changes, before)
+
+    def test_mood_changes_preserve_lock_flags_rating_keys_and_playback_metadata(self):
+        plex=Plex()
+        for key,lock in [('1','1'),('2','0')]:
+            track=plex.tracks[key]
+            track.set('title','Bedtime whispering')
+            track.set('viewCount','8');track.set('lastViewedAt','123456');track.set('viewOffset','3000')
+            track.set('userRating','9');track.set('summary','Locked personal annotation')
+            E.SubElement(track,'Field',name='mood',locked=lock)
+            E.SubElement(track,'Field',name='summary',locked='1')
+            E.SubElement(track,'Genre',tag='Unrelated custom genre')
+        before={k:dict(t.attrib) for k,t in plex.tracks.items()}
+        result=p.sync(self.db,self.config(),{},s,client=plex)
+        self.assertEqual('healthy',result['status'])
+        for key,lock in [('1','1'),('2','0')]:
+            track=plex.tracks[key]
+            self.assertEqual(before[key],track.attrib)
+            self.assertEqual(lock,next(f.get('locked') for f in track.findall('Field') if f.get('name')=='mood'))
+            self.assertEqual('1',next(f.get('locked') for f in track.findall('Field') if f.get('name')=='summary'))
+            self.assertEqual('Unrelated custom genre',track.find('Genre').get('tag'))
+        writes=[params for method,path,params in plex.writes if path=='/library/sections/4/all']
+        self.assertEqual({'0','1'},{params['mood.locked'] for params in writes})
 
     def test_interrupted_creation_recovers_without_duplicate(self):
         plex = Plex()

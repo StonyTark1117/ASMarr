@@ -111,11 +111,12 @@ def sync(db, cfg, secrets, api, *, dry_run=False, client=None):
             current = mood_names(track)
             desired = (current - managed) | {'ASMR: ' + CATEGORIES[k][0] for k in cats}
             if current != desired:
-                changes[(tuple(sorted(current)), tuple(sorted(desired)))].append(key)
+                mood_lock=next((f.get('locked','0') for f in track.findall('Field') if f.get('name')=='mood'),'0')
+                changes[(tuple(sorted(current)), tuple(sorted(desired)), mood_lock)].append(key)
                 expected_moods[key] = desired
                 if not dry_run and api.meta_get(db, 'playlist_mood_backup:' + key) is None:
                     api.meta_set(db, 'playlist_mood_backup:' + key,
-                                 {'moods': sorted(current), 'locked': next((f.get('locked') for f in track.findall('Field') if f.get('name') == 'mood'), '0')})
+                                 {'moods': sorted(current), 'locked': mood_lock})
         report['categories'] = {k: len(v) for k, v in members.items()}
         report['unclassified'] = len(tracks) - len(set().union(*members.values()))
         report['tagged'] = len(expected_moods)
@@ -123,9 +124,9 @@ def sync(db, cfg, secrets, api, *, dry_run=False, client=None):
             report['status'] = 'preview'
             return report
         db.commit()  # Save rollback metadata before changing Plex.
-        for (old, desired), keys in changes.items():
+        for (old, desired, mood_lock), keys in changes.items():
             for i in range(0, len(keys), 40):
-                params = {'type': 10, 'id': ','.join(keys[i:i+40]), 'mood.locked': 1}
+                params = {'type': 10, 'id': ','.join(keys[i:i+40]), 'mood.locked': mood_lock}
                 removed = set(old) - set(desired)
                 if removed:
                     params['mood[].tag.tag-'] = ','.join(quote(x, safe='') for x in sorted(removed))
