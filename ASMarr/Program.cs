@@ -123,6 +123,12 @@ api.MapGet("/calendar",()=>store.Query("SELECT key,title,creator,published,state
 api.MapGet("/connectors",()=>new {sources=store.Query("SELECT * FROM sources ORDER BY name"),configuration=new[]{"reddit","soundgasm","youtube","sfw"}.Select(k=>new{kind=k,enabled=store.Setting("source."+k+".enabled","true")=="true"})});
 api.MapPut("/connectors/{kind}",(string kind,JsonElement j)=>{if(kind is not ("reddit" or "soundgasm" or "youtube" or "sfw"))return Results.BadRequest();store.Set("source."+kind+".enabled",j.GetProperty("enabled").GetBoolean()?"true":"false");return Results.Ok();});
 api.MapGet("/profiles",()=>store.Query("SELECT * FROM profiles"));
+api.MapPost("/profiles",(ProfileEdit p)=> {
+    if(string.IsNullOrWhiteSpace(p.Name)||p.Name.Length>100)return Results.BadRequest(new{error="Profile name must contain 1–100 characters"});
+    var error=ValidateProfile(p.Settings);if(error!=null)return Results.BadRequest(new{error});
+    var id=store.Query("INSERT INTO profiles(name,settings) VALUES($name,$settings) RETURNING id",("name",p.Name.Trim()),("settings",p.Settings.GetRawText()))[0]["id"];
+    return Results.Created("/api/v1/profiles/"+id,new{id});
+});
 api.MapPut("/profiles/{id:int}",(int id,ProfileEdit p)=>{var error=ValidateProfile(p.Settings);if(error!=null)return Results.BadRequest(new{error});store.Execute("UPDATE profiles SET name=$name,settings=$settings WHERE id=$id",("id",id),("name",p.Name),("settings",p.Settings.GetRawText()));return Results.Ok();});
 api.MapGet("/video/profiles",()=>store.Query("SELECT * FROM video_quality_profiles ORDER BY id"));
 api.MapPut("/video/profiles/{id:int}",(int id,VideoProfileEdit p)=>{if(p.Resolution is not ("Any" or "2160p" or "1440p" or "1080p" or "720p" or "480p"))return Results.BadRequest(new{error="Unsupported resolution"});store.Execute("UPDATE video_quality_profiles SET name=$name,resolution=$resolution,settings=$settings WHERE id=$id",("id",id),("name",p.Name),("resolution",p.Resolution),("settings",p.Settings.GetRawText()));return Results.Ok();});

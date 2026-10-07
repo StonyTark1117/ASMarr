@@ -1554,6 +1554,20 @@ function App() {
                 </>
               ) : tab === "Profiles" ? (
                 <>
+                  <section className="panel">
+                    <h2>Create acquisition profile</h2>
+                    <form onSubmit={async e => {
+                      e.preventDefault();const target=e.currentTarget;const fields=new FormData(target);
+                      try {
+                        const saved=await act("profiles","POST",{name:fields.get("name"),settings:JSON.parse(String(fields.get("settings")))});
+                        if(saved){target.reset();notify("Profile created");}
+                      } catch {setError("Invalid profile JSON");}
+                    }}>
+                      <label>New profile name<input name="name" required maxLength={100}/></label>
+                      <label>New profile rules<textarea name="settings" rows={6} defaultValue={JSON.stringify({minimumDuration:0,allowedFormats:[".m4a",".mp3",".aac",".opus",".flac",".wav"],sourcePriorities:["soundgasm","youtube","reddit"],directRetries:3,backlogLimit:3,fallback:true},null,2)}/></label>
+                      <button className="primary">Create profile</button>
+                    </form>
+                  </section>
                   {Array.isArray(data) &&
                     data.map((p: Row) => (
                       <section className="panel" key={p.id}>
