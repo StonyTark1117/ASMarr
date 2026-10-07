@@ -37,9 +37,16 @@ if __name__=='__main__':
         cookie=r.headers.get('Set-Cookie','').lower();results['secureCookie']=all(flag in cookie for flag in ['secure','httponly','samesite=strict'])
         results['csrfDenied']=login.post(base+'/api/v1/commands',json={'name':'health','arguments':{}}).status_code==403
         results['crossOriginDenied']=login.post(base+'/api/v1/commands',headers={'X-ASMarr-Request':'1','Origin':'https://unrelated.invalid'},json={'name':'health','arguments':{}}).status_code==403
-        for path in ['creators','identities','recordings','wanted','queue','history','connectors','profiles','searches','download-clients','media-servers','commands','tasks','health','logs','system/status','calendar','settings','backups','system/updates']:
+        for path in ['creators','identities','recordings','wanted','queue','history',
+                     'video/wanted','video/queue','video/history','video/profiles',
+                     'connectors','profiles','searches','download-clients','media-servers',
+                     'commands','tasks','health','logs','system/status','calendar','settings',
+                     'backups','system/updates']:
             request('GET',path);results['api:'+path]=True
+        creators=request('GET','creators')
+        results['existingCreatorsVideoDisabled']=all(not c.get('monitor_video') for c in creators)
         results['shadowGrabDenied']=s.post(base+'/api/v1/commands',json={'name':'grab','arguments':{}},timeout=30).status_code==409
+        results['shadowVideoQueueDenied']=s.post(base+'/api/v1/commands',json={'name':'video-queue','arguments':{}},timeout=30).status_code==409
         print(json.dumps(results));assert all(results.values())
     elif operation=='discovery':print(json.dumps({'commandId':command('discovery')}))
     else:print(json.dumps(request('GET','system/status')))
