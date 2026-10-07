@@ -255,6 +255,24 @@ class VideoTests(unittest.TestCase):
         short = dict(base, secure_media={'reddit_video':{'duration':30}}, selftext='')
         self.assertEqual(v.reddit_video_targets(short, 180), [])
 
+    def test_reddit_history_continuation_resumes_until_exhausted(self):
+        self.db.execute("INSERT INTO identities(creator_id,kind,handle) VALUES(1,'reddit','creator')")
+        def post(identifier):
+            return {'id':identifier,'author':'creator','title':'[F4A] ASMR visual',
+                    'over_18':False,'created_utc':1704067204,
+                    'url_overridden_by_dest':f'https://v.redd.it/{identifier}',
+                    'secure_media':{'reddit_video':{'duration':300}}}
+        cfg = dict(self.cfg, subreddits=['asmr'], youtube_min_duration_seconds=180,
+                   video_reddit_history_pages=1)
+        with patch.object(b.core.Reddit, 'page', side_effect=[([post('first')],'next-page'),
+                                                               ([post('second')],None)]) as page:
+            first = v.backfill(self.db, cfg, {'reddit':{}}, {'creatorId':1}, b.core)
+            second = v.backfill(self.db, cfg, {'reddit':{}}, {'creatorId':1}, b.core)
+        self.assertEqual((first['state'],second['state']), ('interrupted','completed'))
+        self.assertEqual(page.call_args_list[0].args, ('asmr',None))
+        self.assertEqual(page.call_args_list[1].args, ('asmr','next-page'))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM video_candidates').fetchone()[0], 2)
+
     def test_roots_and_interactive_prowlarr_safety(self):
         with self.assertRaisesRegex(ValueError, 'overlap'): v.validate_roots('/media/asmr', '/media/asmr/video')
         candidate = v.rank_candidate({'resolution':1080,'requires_transcode':False}, {'resolution':'Any'})

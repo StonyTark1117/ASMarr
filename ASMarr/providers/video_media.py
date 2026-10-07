@@ -353,14 +353,14 @@ def backfill(db, cfg, secrets, args, core):
         # paged until exhausted. Outbound YouTube links share provider IDs with the
         # channel path, so cross-posts cannot create a second transfer.
         reddit_handles = {r['handle'].casefold() for r in identities if r['kind'] == 'reddit'}
+        continuation_pending = False
         if reddit_handles:
             reddit = core.Reddit(core.HTTP(), secrets.get('reddit', {}))
             subreddits = cfg.get('subreddits', [])
             subreddit_start = int(cursor.get('subreddit', 0)) if cursor.get('phase') == 'reddit' else len(subreddits)
             for subreddit_index, sub in enumerate(subreddits[subreddit_start:], start=subreddit_start):
                 after = cursor.get('after') if subreddit_index == subreddit_start else None
-                page_start = int(cursor.get('page', 0)) if subreddit_index == subreddit_start else 0
-                for page_index in range(page_start, cfg.get('video_reddit_history_pages', 100)):
+                for _ in range(cfg.get('video_reddit_history_pages', 100)):
                     if not _video_monitoring_enabled(db, creator_id):
                         raise InterruptedError('video_monitoring_disabled')
                     posts, after = reddit.page(sub, after)
@@ -383,12 +383,21 @@ def backfill(db, cfg, secrets, args, core):
                             _, added = add_candidate(db, key, provider, normalized, post=post)
                             eligible += int(added); total += 1
                     next_cursor = ({'phase': 'reddit', 'subreddit': subreddit_index,
-                                    'page': page_index + 1, 'after': after} if after else
+                                    'page': 0, 'after': after} if after else
                                    {'phase': 'reddit', 'subreddit': subreddit_index + 1,
                                     'page': 0, 'after': None})
                     _backfill_checkpoint(db, job_id, discovered, eligible, total, next_cursor)
                     if not after:
                         break
+                if after:
+                    continuation_pending = True
+                    break
+        if continuation_pending:
+            updated = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            db.execute("UPDATE backfill_jobs SET state='interrupted',updated=?,error='reddit_history_continuation' WHERE id=?",
+                       (updated, job_id)); db.commit()
+            return {'id': job_id, 'state': 'interrupted', 'discovered': discovered,
+                    'eligible': eligible, 'total': total}
         finished = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         db.execute("UPDATE backfill_jobs SET state='completed',discovered=?,eligible=?,total=?,cursor=NULL,updated=?,finished=?,error=NULL WHERE id=?",
                    (discovered, eligible, total, finished, finished, job_id)); db.commit()
