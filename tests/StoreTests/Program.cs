@@ -32,4 +32,16 @@ Assert(reopened.Query("SELECT state FROM commands WHERE id=$id",("id",id))[0]["s
 string backup=store.Backup();
 using(var db=new SqliteConnection("Data Source="+backup)){db.Open();using var c=db.CreateCommand();c.CommandText="SELECT count(*) FROM commands";Assert(Convert.ToInt32(c.ExecuteScalar())==1,"SQLite online backup retains durable commands");}
 Console.WriteLine($"{assertions} store integration assertions passed");
+store.Execute("INSERT INTO profiles VALUES(1,'Default','{}');INSERT INTO profiles VALUES(2,'Sleep','{}')");
+store.Execute("INSERT INTO creators(id,name,path,tags) VALUES(1,'First','/fixture/first','[\"Existing\"]'),(2,'Second','/fixture/second','[]')");
+Assert(CreatorBatch.Apply(store,new MassEdit([1,2],ProfileId:2,AddTags:["Sleep","sleep"])) is null,"mass edit applies valid profile and deduplicated tags");
+Assert(store.Query("SELECT * FROM creators WHERE profile_id=2").Count==2,"mass profile edit persists for every selected creator");
+Assert(store.Query("SELECT tags FROM creators WHERE id=1")[0]["tags"]!.ToString()=="[\"Existing\",\"Sleep\"]","additive tags preserve existing labels");
+Assert(CreatorBatch.Apply(store,new MassEdit([1,999],Monitored:false)) is not null,"missing creator rejects the whole batch");
+Assert(Convert.ToInt32(store.Query("SELECT monitored FROM creators WHERE id=1")[0]["monitored"])==1,"failed batch rolls back earlier creator changes");
+Assert(CreatorBatch.Apply(store,new MassEdit([1],ProfileId:999)) is not null,"unknown profile is rejected without changing creator");
+Assert(CreatorBatch.Apply(store,new MassEdit([1],Tags:[])) is null,"explicit empty replacement can clear tags");
+Assert(store.Query("SELECT tags FROM creators WHERE id=1")[0]["tags"]!.ToString()=="[]","explicit tag replacement is persisted");
+Assert(Convert.ToInt32(store.Query("SELECT monitor_video FROM creators WHERE id=1")[0]["monitor_video"])==0,"audio batch editing never opts creators into videos");
+Console.WriteLine($"{assertions} store integration assertions passed including atomic batch edits");
 SqliteConnection.ClearAllPools();Directory.Delete(root,true);

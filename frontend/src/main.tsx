@@ -124,6 +124,12 @@ function App() {
     [candidates, setCandidates] = useState<Row[] | null>(null),
     [candidateKind, setCandidateKind] = useState("Audio"),
     [videoProfiles, setVideoProfiles] = useState<Row[]>([]),
+    [audioProfiles, setAudioProfiles] = useState<Row[]>([]),
+    [creatorFilter, setCreatorFilter] = useState("all"),
+    [creatorTag, setCreatorTag] = useState(""),
+    [batchProfile, setBatchProfile] = useState(""),
+    [batchTags, setBatchTags] = useState(""),
+    [batchTagMode, setBatchTagMode] = useState("add"),
     [form, setForm] = useState(""),
     [integration, setIntegration] = useState("prowlarr");
   useEffect(() => {
@@ -188,14 +194,14 @@ function App() {
             : tab === "Updates"
               ? "system/updates"
               : tab === "Logs"
-            ? "logs"
-            : tab === "Backups"
-              ? "backups"
-              : tab === "Shadow cycles"
-                ? "shadow-cycles"
-                : tab === "Health"
-                  ? "health"
-                  : "tasks",
+                ? "logs"
+                : tab === "Backups"
+                  ? "backups"
+                  : tab === "Shadow cycles"
+                    ? "shadow-cycles"
+                    : tab === "Health"
+                      ? "health"
+                      : "tasks",
       } as Record<string, string>
     )[page];
     Promise.all([api(path), api("system/status")])
@@ -218,7 +224,12 @@ function App() {
   }, [auth, page, tab, tick]);
   useEffect(() => {
     if (!auth) return;
-    api("video/profiles").then(setVideoProfiles).catch(() => {});
+    api("video/profiles")
+      .then(setVideoProfiles)
+      .catch(() => {});
+    api("profiles")
+      .then(setAudioProfiles)
+      .catch(() => {});
   }, [auth, tick]);
   const notify = (s: string) => {
     setToast(s);
@@ -378,8 +389,24 @@ function App() {
                       {r.source?.split(":")[0]}
                     </span>
                   </td>
-                  <td><Badge value={r.media_kind === "Audio" ? r.media_state : r.audio_state || r.state} /></td>
-                  <td><Badge value={r.media_kind === "Video" ? r.media_state : r.video_state || "not monitored"} /></td>
+                  <td>
+                    <Badge
+                      value={
+                        r.media_kind === "Audio"
+                          ? r.media_state
+                          : r.audio_state || r.state
+                      }
+                    />
+                  </td>
+                  <td>
+                    <Badge
+                      value={
+                        r.media_kind === "Video"
+                          ? r.media_state
+                          : r.video_state || "not monitored"
+                      }
+                    />
+                  </td>
                   <td className="muted">{when(r.published || r.acquired)}</td>
                 </tr>
               ))}
@@ -682,7 +709,10 @@ function App() {
                 <section className="panel">
                   <h2>{candidateKind} search results</h2>
                   {candidateKind === "Video" && (
-                    <p className="muted">Prowlarr video releases are manual-only and are never automatically grabbed.</p>
+                    <p className="muted">
+                      Prowlarr video releases are manual-only and are never
+                      automatically grabbed.
+                    </p>
                   )}
                   {candidates.length ? (
                     <table>
@@ -690,7 +720,11 @@ function App() {
                         <tr>
                           <th>Release</th>
                           <th>Indexer</th>
-                          <th>{candidateKind === "Video" ? "Resolution" : "Confidence"}</th>
+                          <th>
+                            {candidateKind === "Video"
+                              ? "Resolution"
+                              : "Confidence"}
+                          </th>
                           <th></th>
                         </tr>
                       </thead>
@@ -699,7 +733,13 @@ function App() {
                           <tr key={i}>
                             <td>{c.title}</td>
                             <td>{c.indexer}</td>
-                            <td>{candidateKind === "Video" ? (c.resolution ? `${c.resolution}p` : "Unknown") : `${Math.round(c.confidence * 100)}%`}</td>
+                            <td>
+                              {candidateKind === "Video"
+                                ? c.resolution
+                                  ? `${c.resolution}p`
+                                  : "Unknown"
+                                : `${Math.round(c.confidence * 100)}%`}
+                            </td>
                             <td>
                               <button
                                 disabled={status.mode === "shadow"}
@@ -748,16 +788,22 @@ function App() {
                         aria-label="Monitored"
                         type="checkbox"
                         checked={!!creator.creator.monitored}
-                        onChange={(e) => toggle(creator.creator, e.target.checked)}
-                      />{" "}Monitor audio
+                        onChange={(e) =>
+                          toggle(creator.creator, e.target.checked)
+                        }
+                      />{" "}
+                      Monitor audio
                     </label>
                     <label className="switch-label">
                       <input
                         aria-label="Monitor Videos"
                         type="checkbox"
                         checked={!!creator.creator.monitor_video}
-                        onChange={(e) => updateVideo(creator.creator, e.target.checked)}
-                      />{" "}Monitor Videos
+                        onChange={(e) =>
+                          updateVideo(creator.creator, e.target.checked)
+                        }
+                      />{" "}
+                      Monitor Videos
                     </label>
                     <label>
                       Video quality
@@ -765,18 +811,37 @@ function App() {
                         aria-label="Video quality profile"
                         value={creator.creator.video_quality_profile_id || 1}
                         disabled={!creator.creator.monitor_video}
-                        onChange={(e) => updateVideo(creator.creator, true, Number(e.target.value))}
+                        onChange={(e) =>
+                          updateVideo(
+                            creator.creator,
+                            true,
+                            Number(e.target.value),
+                          )
+                        }
                       >
-                        {videoProfiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        {videoProfiles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
                       </select>
                     </label>
                   </div>
                 </div>
                 {creator.backfill && (
                   <div className="backfill-progress">
-                    <div><b>Full-history video scan</b><Badge value={creator.backfill.state} /></div>
-                    <progress value={creator.backfill.eligible || 0} max={Math.max(creator.backfill.total || 1, 1)} />
-                    <span>{creator.backfill.eligible || 0} eligible · {creator.backfill.discovered || 0} inspected</span>
+                    <div>
+                      <b>Full-history video scan</b>
+                      <Badge value={creator.backfill.state} />
+                    </div>
+                    <progress
+                      value={creator.backfill.eligible || 0}
+                      max={Math.max(creator.backfill.total || 1, 1)}
+                    />
+                    <span>
+                      {creator.backfill.eligible || 0} eligible ·{" "}
+                      {creator.backfill.discovered || 0} inspected
+                    </span>
                   </div>
                 )}
                 {creator.identities.map((i: Row) => (
@@ -986,6 +1051,22 @@ function App() {
                   />
                 </div>
                 <span className="muted">{data?.length || 0} creators</span>
+                <select
+                  aria-label="Creator monitoring filter"
+                  value={creatorFilter}
+                  onChange={(e) => setCreatorFilter(e.target.value)}
+                >
+                  <option value="all">All creators</option>
+                  <option value="monitored">Monitored</option>
+                  <option value="unmonitored">Unmonitored</option>
+                  <option value="video">Video monitored</option>
+                </select>
+                <input
+                  aria-label="Creator tag filter"
+                  placeholder="Filter by tag…"
+                  value={creatorTag}
+                  onChange={(e) => setCreatorTag(e.target.value)}
+                />
                 {selected.length > 0 && (
                   <>
                     <button
@@ -1013,11 +1094,93 @@ function App() {
                   </>
                 )}
               </div>
+              {selected.length > 0 && (
+                <section className="panel">
+                  <h2>Edit {selected.length} selected creators</h2>
+                  <div className="toolbar">
+                    <select
+                      aria-label="Mass acquisition profile"
+                      value={batchProfile}
+                      onChange={(e) => setBatchProfile(e.target.value)}
+                    >
+                      <option value="">Keep acquisition profiles</option>
+                      {audioProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Mass tag action"
+                      value={batchTagMode}
+                      onChange={(e) => setBatchTagMode(e.target.value)}
+                    >
+                      <option value="add">Add tags</option>
+                      <option value="replace">Replace tags</option>
+                    </select>
+                    <input
+                      aria-label="Mass creator tags"
+                      placeholder="Comma-separated tags"
+                      value={batchTags}
+                      onChange={(e) => setBatchTags(e.target.value)}
+                    />
+                    <button
+                      className="primary"
+                      disabled={
+                        !batchProfile &&
+                        !batchTags.trim() &&
+                        batchTagMode !== "replace"
+                      }
+                      onClick={async () => {
+                        const tags = batchTags
+                          .split(",")
+                          .map((tag) => tag.trim())
+                          .filter(Boolean);
+                        const edit: Row = { ids: selected };
+                        if (batchProfile) edit.profileId = Number(batchProfile);
+                        if (batchTagMode === "replace") edit.tags = tags;
+                        else if (tags.length) edit.addTags = tags;
+                        if (await act("creators/mass-edit", "POST", edit)) {
+                          setSelected([]);
+                          setBatchProfile("");
+                          setBatchTags("");
+                          notify("Creator edits saved");
+                        }
+                      }}
+                    >
+                      Apply creator edits
+                    </button>
+                  </div>
+                  <p className="muted">
+                    Adding tags preserves existing labels. Replacing with an
+                    empty list clears tags. Audio profile edits do not enable
+                    video monitoring.
+                  </p>
+                </section>
+              )}
               <div className="creator-grid">
                 {Array.isArray(data) &&
                   data
-                    .filter((c: Row) =>
-                      c.name.toLowerCase().includes(query.toLowerCase()),
+                    .filter(
+                      (c: Row) =>
+                        [
+                          c.name,
+                          ...JSON.parse(c.aliases || "[]"),
+                          ...JSON.parse(c.tags || "[]"),
+                        ]
+                          .join(" ")
+                          .toLowerCase()
+                          .includes(query.toLowerCase()) &&
+                        (creatorFilter === "all" ||
+                          (creatorFilter === "monitored" && !!c.monitored) ||
+                          (creatorFilter === "unmonitored" && !c.monitored) ||
+                          (creatorFilter === "video" && !!c.monitor_video)) &&
+                        (!creatorTag ||
+                          JSON.parse(c.tags || "[]").some((tag: string) =>
+                            tag
+                              .toLowerCase()
+                              .includes(creatorTag.toLowerCase()),
+                          )),
                     )
                     .map((c: Row, i: number) => (
                       <article className="creator-card" key={c.id}>
@@ -1054,7 +1217,10 @@ function App() {
                             {c.name}
                           </button>
                           <div>
-                            <span>{c.audio_completed || 0} audio · {c.video_completed || 0} video</span>
+                            <span>
+                              {c.audio_completed || 0} audio ·{" "}
+                              {c.video_completed || 0} video
+                            </span>
                             <label title="Toggle monitoring">
                               <input
                                 type="checkbox"
@@ -1075,34 +1241,63 @@ function App() {
             <>
               <div className="tabs">
                 {["Wanted", "Queue", "History", "Failed"].map((t) => (
-                  <button className={tab === t ? "active" : ""} onClick={() => setTab(t)} key={t}>{t}</button>
+                  <button
+                    className={tab === t ? "active" : ""}
+                    onClick={() => setTab(t)}
+                    key={t}
+                  >
+                    {t}
+                  </button>
                 ))}
               </div>
               <div className="toolbar">
-                <span className="muted">Visual copies are tracked independently from audio.</span>
+                <span className="muted">
+                  Visual copies are tracked independently from audio.
+                </span>
                 {tab === "Wanted" && (
-                  <button disabled={status.mode === "shadow"} onClick={() => command("video-queue")}>
+                  <button
+                    disabled={status.mode === "shadow"}
+                    onClick={() => command("video-queue")}
+                  >
                     <Play size={15} /> Process one video
                   </button>
                 )}
-                <button onClick={() => command("plex-video-verify")}><Radio size={15} /> Validate Plex video library</button>
+                <button onClick={() => command("plex-video-verify")}>
+                  <Radio size={15} /> Validate Plex video library
+                </button>
               </div>
               {tab === "Wanted" && Array.isArray(data) && recordingTable(data)}
               {tab === "Queue" && (
                 <>
                   {data?.backfills?.map((job: Row) => (
-                    <div className="source-row" key={job.id}><RefreshCw size={16}/><b>History scan</b><Badge value={job.state}/><span>{job.eligible} eligible / {job.discovered} inspected</span></div>
+                    <div className="source-row" key={job.id}>
+                      <RefreshCw size={16} />
+                      <b>History scan</b>
+                      <Badge value={job.state} />
+                      <span>
+                        {job.eligible} eligible / {job.discovered} inspected
+                      </span>
+                    </div>
                   ))}
                   {data?.direct && recordingTable(data.direct)}
                   {data?.downloads?.map((job: Row) => (
-                    <div className="source-row" key={job.id}><Download size={16}/><b>{job.provider}</b><Badge value={job.state}/></div>
+                    <div className="source-row" key={job.id}>
+                      <Download size={16} />
+                      <b>{job.provider}</b>
+                      <Badge value={job.state} />
+                    </div>
                   ))}
                 </>
               )}
               {tab === "History" && (
                 <>
                   {data?.backfills?.map((job: Row) => (
-                    <div className="source-row" key={job.id}><Clock size={16}/><b>Full-history scan</b><Badge value={job.state}/><span>{when(job.finished || job.updated)}</span></div>
+                    <div className="source-row" key={job.id}>
+                      <Clock size={16} />
+                      <b>Full-history scan</b>
+                      <Badge value={job.state} />
+                      <span>{when(job.finished || job.updated)}</span>
+                    </div>
                   ))}
                   {data?.assets && recordingTable(data.assets)}
                 </>
@@ -1110,8 +1305,19 @@ function App() {
               {tab === "Failed" && (
                 <>
                   <h2>Failed or unavailable videos</h2>
-                  <p className="muted">Failed transfers can be retried from recording details. Deleted or unsupported releases remain visible without blocking the remaining history scan.</p>
-                  {data?.assets && recordingTable(data.assets.filter((asset: Row) => ["failed", "unavailable"].includes(asset.video_state || asset.media_state || asset.state)))}
+                  <p className="muted">
+                    Failed transfers can be retried from recording details.
+                    Deleted or unsupported releases remain visible without
+                    blocking the remaining history scan.
+                  </p>
+                  {data?.assets &&
+                    recordingTable(
+                      data.assets.filter((asset: Row) =>
+                        ["failed", "unavailable"].includes(
+                          asset.video_state || asset.media_state || asset.state,
+                        ),
+                      ),
+                    )}
                 </>
               )}
             </>
@@ -1392,31 +1598,74 @@ function App() {
                 <>
                   <section className="panel">
                     <h2>Video storage & transfers</h2>
-                    <p className="muted">Use a dedicated Plex Other Videos library. Video transfers default to one at a time and pause below the free-space threshold.</p>
-                    {Array.isArray(data) && data
-                      .filter((s: Row) => s.key.startsWith("video."))
-                      .map((s: Row) => (
-                        <form className="setting-form" key={s.key} onSubmit={(e) => {
-                          e.preventDefault(); const f = new FormData(e.currentTarget);
-                          act("settings/" + s.key, "PUT", { value: f.get("value") });
-                          notify("Video setting saved");
-                        }}>
-                          <label>{s.key}<input name="value" defaultValue={s.value} /></label>
-                          <button>Save</button>
-                        </form>
-                      ))}
-                    <button onClick={() => command("plex-video-verify")}><Radio size={15}/> Validate dedicated Plex library</button>
+                    <p className="muted">
+                      Use a dedicated Plex Other Videos library. Video transfers
+                      default to one at a time and pause below the free-space
+                      threshold.
+                    </p>
+                    {Array.isArray(data) &&
+                      data
+                        .filter((s: Row) => s.key.startsWith("video."))
+                        .map((s: Row) => (
+                          <form
+                            className="setting-form"
+                            key={s.key}
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              const f = new FormData(e.currentTarget);
+                              act("settings/" + s.key, "PUT", {
+                                value: f.get("value"),
+                              });
+                              notify("Video setting saved");
+                            }}
+                          >
+                            <label>
+                              {s.key}
+                              <input name="value" defaultValue={s.value} />
+                            </label>
+                            <button>Save</button>
+                          </form>
+                        ))}
+                    <button onClick={() => command("plex-video-verify")}>
+                      <Radio size={15} /> Validate dedicated Plex library
+                    </button>
                   </section>
                   <section className="panel">
                     <h2>Video quality profiles</h2>
                     {videoProfiles.map((p) => (
-                      <form className="setting-form" key={p.id} onSubmit={(e) => {
-                        e.preventDefault(); const f = new FormData(e.currentTarget);
-                        act(`video/profiles/${p.id}`, "PUT", {name: f.get("name"), resolution: f.get("resolution"), settings: JSON.parse(p.settings || "{}")});
-                        notify("Video profile saved");
-                      }}>
-                        <label>Name<input name="name" defaultValue={p.name}/></label>
-                        <label>Resolution<select name="resolution" defaultValue={p.resolution}>{["Any","2160p","1440p","1080p","720p","480p"].map(r => <option key={r}>{r}</option>)}</select></label>
+                      <form
+                        className="setting-form"
+                        key={p.id}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const f = new FormData(e.currentTarget);
+                          act(`video/profiles/${p.id}`, "PUT", {
+                            name: f.get("name"),
+                            resolution: f.get("resolution"),
+                            settings: JSON.parse(p.settings || "{}"),
+                          });
+                          notify("Video profile saved");
+                        }}
+                      >
+                        <label>
+                          Name
+                          <input name="name" defaultValue={p.name} />
+                        </label>
+                        <label>
+                          Resolution
+                          <select name="resolution" defaultValue={p.resolution}>
+                            {[
+                              "Any",
+                              "2160p",
+                              "1440p",
+                              "1080p",
+                              "720p",
+                              "480p",
+                            ].map((r) => (
+                              <option key={r}>{r}</option>
+                            ))}
+                          </select>
+                        </label>
                         <button>Save</button>
                       </form>
                     ))}
@@ -1602,39 +1851,85 @@ function App() {
           ) : page === "System" ? (
             <>
               <div className="tabs">
-                {["Status", "Tasks", "Logs", "Health", "Backups", "Shadow cycles", "Updates"].map(
-                  (t) => (
-                    <button
-                      className={tab === t ? "active" : ""}
-                      onClick={() => setTab(t)}
-                      key={t}
-                    >
-                      {t}
-                    </button>
-                  ),
-                )}
+                {[
+                  "Status",
+                  "Tasks",
+                  "Logs",
+                  "Health",
+                  "Backups",
+                  "Shadow cycles",
+                  "Updates",
+                ].map((t) => (
+                  <button
+                    className={tab === t ? "active" : ""}
+                    onClick={() => setTab(t)}
+                    key={t}
+                  >
+                    {t}
+                  </button>
+                ))}
               </div>
               <section className="panel">
                 {tab === "Status" ? (
                   <>
                     <h2>System status</h2>
-                    <div className="source-row"><b>Version</b><span>{data?.version}</span></div>
-                    <div className="source-row"><b>Runtime</b><span>{data?.runtime}</span></div>
-                    <div className="source-row"><b>Execution mode</b><Badge value={data?.mode || "unknown"} /></div>
-                    <div className="source-row"><b>Scheduler</b><span>{data?.scheduler}</span></div>
-                    <div className="source-row"><b>Audio root</b><code>{data?.root}</code></div>
-                    <div className="source-row"><b>Video root</b><code>{data?.videoRoot}</code></div>
-                    <div className="source-row"><b>Audio free space</b><span>{((data?.disk?.available || 0) / 1073741824).toFixed(1)} GiB</span></div>
-                    <div className="source-row"><b>Qualified shadow days</b><span>{data?.qualifiedShadowDays || 0} / 3</span></div>
+                    <div className="source-row">
+                      <b>Version</b>
+                      <span>{data?.version}</span>
+                    </div>
+                    <div className="source-row">
+                      <b>Runtime</b>
+                      <span>{data?.runtime}</span>
+                    </div>
+                    <div className="source-row">
+                      <b>Execution mode</b>
+                      <Badge value={data?.mode || "unknown"} />
+                    </div>
+                    <div className="source-row">
+                      <b>Scheduler</b>
+                      <span>{data?.scheduler}</span>
+                    </div>
+                    <div className="source-row">
+                      <b>Audio root</b>
+                      <code>{data?.root}</code>
+                    </div>
+                    <div className="source-row">
+                      <b>Video root</b>
+                      <code>{data?.videoRoot}</code>
+                    </div>
+                    <div className="source-row">
+                      <b>Audio free space</b>
+                      <span>
+                        {((data?.disk?.available || 0) / 1073741824).toFixed(1)}{" "}
+                        GiB
+                      </span>
+                    </div>
+                    <div className="source-row">
+                      <b>Qualified shadow days</b>
+                      <span>{data?.qualifiedShadowDays || 0} / 3</span>
+                    </div>
                   </>
                 ) : tab === "Updates" ? (
                   <>
                     <h2>Application updates</h2>
-                    <div className="source-row"><b>Installed version</b><span>{data?.version}</span></div>
-                    <div className="source-row"><b>Release channel</b><span>{data?.channel}</span></div>
-                    <div className="source-row"><b>Automatic updates</b><span>{data?.automatic ? "Enabled" : "Disabled"}</span></div>
+                    <div className="source-row">
+                      <b>Installed version</b>
+                      <span>{data?.version}</span>
+                    </div>
+                    <div className="source-row">
+                      <b>Release channel</b>
+                      <span>{data?.channel}</span>
+                    </div>
+                    <div className="source-row">
+                      <b>Automatic updates</b>
+                      <span>{data?.automatic ? "Enabled" : "Disabled"}</span>
+                    </div>
                     <p className="muted">{data?.message}</p>
-                    <p>Deployments require a verified build, a rollback backup, and the rollout acceptance gates. This page does not install or restart the application.</p>
+                    <p>
+                      Deployments require a verified build, a rollback backup,
+                      and the rollout acceptance gates. This page does not
+                      install or restart the application.
+                    </p>
                   </>
                 ) : tab === "Tasks" ? (
                   <>

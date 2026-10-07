@@ -2,7 +2,17 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 const config = "./runtime/config";
 const auth = () => JSON.parse(readFileSync(config + "/auth.json", "utf8"));
+let verifiedSession: any[] | null = null;
 async function login(page: any) {
+  // Exercise form login once, then reuse that verified session in isolated page
+  // contexts. Repeated workflow setup must not bypass or exhaust the real
+  // five-logins-per-minute production limiter.
+  if (verifiedSession) {
+    await page.context().addCookies(verifiedSession);
+    await page.goto("/");
+    await expect(page.getByRole("heading", {name:"Welcome to your quiet corner."})).toBeVisible();
+    return;
+  }
   const password = readFileSync(config + "/initial-admin.txt", "utf8")
     .split("\n")[1]
     .split(": ")[1];
@@ -12,6 +22,7 @@ async function login(page: any) {
   await expect(
     page.getByRole("heading", { name: "Welcome to your quiet corner." }),
   ).toBeVisible();
+  verifiedSession = await page.context().cookies();
 }
 test("form authentication and protected resources", async ({
   page,
@@ -197,4 +208,36 @@ test("system status updates and failed video workspace", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Failed or unavailable videos" })).toBeVisible();
   await expect(page.getByText("Failed visual copy", { exact: true })).toBeVisible();
   await expect(page.getByText("Successful visual copy", { exact: true })).not.toBeVisible();
+});
+
+test("creator profile tags filters and invalid batch rollback", async ({ page, request }) => {
+  const headers = { "X-Api-Key": auth().apiKey };
+  const created = await request.post("/api/v1/profiles", { headers, data: {name:"Mass sleep profile",settings:{minimumDuration:0}} });
+  expect(created.ok()).toBe(true);
+  const profiles = await (await request.get("/api/v1/profiles", { headers })).json();
+  const profile = profiles.find((p: any) => p.name === "Mass sleep profile");
+  await login(page);
+  await page.getByRole("button", {name:"Creators",exact:true}).click();
+  await page.getByLabel("Select Quiet Creator").check();
+  await page.getByLabel("Select Soft Voice").check();
+  await page.getByLabel("Mass acquisition profile").selectOption(String(profile.id));
+  await page.getByLabel("Mass creator tags").fill("sleep, focus");
+  await page.getByRole("button", {name:"Apply creator edits",exact:true}).click();
+  await expect.poll(async () => {
+    const rows = await (await request.get("/api/v1/creators",{headers})).json();
+    return rows.every((c: any) => c.profile_id === profile.id && JSON.parse(c.tags).includes("sleep"));
+  }).toBe(true);
+  const rejected = await request.post("/api/v1/creators/mass-edit",{headers,data:{ids:[1,99999],monitored:false}});
+  expect(rejected.status()).toBe(400);
+  const unchanged = await (await request.get("/api/v1/creators",{headers})).json();
+  expect(unchanged.find((c: any) => c.id === 1).monitored).toBe(1);
+  await page.getByLabel("Creator tag filter").fill("absent-tag");
+  await expect(page.getByRole("button",{name:"Quiet Creator",exact:true})).not.toBeVisible();
+  await page.getByLabel("Creator tag filter").fill("sleep");
+  await page.getByRole("button",{name:"Quiet Creator",exact:true}).click();
+  await page.getByLabel("Monitored",{exact:true}).uncheck();
+  await page.getByRole("button",{name:"Back",exact:true}).click();
+  await page.getByLabel("Creator monitoring filter").selectOption("unmonitored");
+  await expect(page.getByRole("button",{name:"Quiet Creator",exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Soft Voice",exact:true})).not.toBeVisible();
 });

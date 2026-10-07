@@ -98,7 +98,7 @@ api.MapPut("/creators/{id:int}",(int id,CreatorEdit c)=> {
     if(wasVideo&&!monitorVideo){store.Execute("UPDATE media_assets SET wanted=0,state='cancelled' WHERE media_kind='Video' AND state IN ('wanted','queued','failed') AND recording_key IN (SELECT key FROM assets WHERE creator=(SELECT name FROM creators WHERE id=$id))",("id",id));store.Execute("UPDATE backfill_jobs SET state='cancelled',updated=$now,finished=$now WHERE creator_id=$id AND media_kind='Video' AND state IN ('queued','running','failed')",("id",id),("now",DateTimeOffset.UtcNow.ToString("O")));}
     return Results.Ok(new{monitorVideo,backfillCommandId=commandId});
 });
-api.MapPost("/creators/mass-edit",(MassEdit m)=> {foreach(int id in m.Ids)store.Execute("UPDATE creators SET monitored=$value WHERE id=$id",("id",id),("value",m.Monitored?1:0));return Results.Ok();});
+api.MapPost("/creators/mass-edit",(MassEdit m)=> {var error=CreatorBatch.Apply(store,m);return error is null?Results.Ok(new{updated=m.Ids.Distinct().Count()}):Results.BadRequest(new{error});});
 api.MapGet("/identities",()=>store.Query("SELECT i.*,c.name AS creator FROM identities i JOIN creators c ON c.id=i.creator_id ORDER BY c.name,i.kind"));
 api.MapPost("/identities",(IdentityEdit i)=> {
     if(i.Kind is not ("reddit" or "soundgasm" or "youtube")||i.Handle.Length>100||!System.Text.RegularExpressions.Regex.IsMatch(i.Handle,@"^[\w-]+$"))return Results.BadRequest(new{error="Invalid source identity"});
@@ -177,7 +177,6 @@ static object IntegrationStatus(Store s) {var p=System.IO.Path.Combine(s.ConfigR
 record Login(string Username,string Password);
 record PasswordChange(string CurrentPassword,string Password);
 record CreatorEdit(bool Monitored,int ProfileId,string[] Tags,bool? MonitorVideo,int? VideoQualityProfileId);
-record MassEdit(int[] Ids,bool Monitored);
 record IdentityEdit(int CreatorId,string Kind,string Handle,bool Enabled);
 record ProfileEdit(string Name,JsonElement Settings);
 record VideoProfileEdit(string Name,string Resolution,JsonElement Settings);
