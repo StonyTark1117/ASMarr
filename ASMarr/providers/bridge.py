@@ -88,6 +88,15 @@ def media_manifest(db):
     return {'files': result, 'missing': missing, 'outside': outside}
 
 
+def production_fingerprint():
+    with contextlib.closing(sqlite3.connect('file:/var/lib/asmr-scraper/state.db?mode=ro',uri=True)) as legacy:
+        h=hashlib.sha256()
+        for table in ['assets','downloads','aliases','meta']:
+            h.update(table.encode())
+            for row in legacy.execute('SELECT * FROM '+table+' ORDER BY 1'):h.update(json.dumps(row,ensure_ascii=False).encode())
+        return h.hexdigest()
+
+
 def migrate(db, cfg):
     if setting(db,'mode','shadow')!='shadow':raise ValueError('migration_requires_shadow_mode')
     backup = STATE / 'backups' / ('legacy-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '.db')
@@ -184,6 +193,8 @@ def configured_discovery(db,cfg):
 def discover(db,cfg,secrets,kind='all',shadow=True):
     if not shadow: production(db)
     started=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
+    production_before=production_fingerprint() if shadow else None
+    app_meta_before=dict(db.execute('SELECT key,value FROM meta'))
     working=sqlite3.connect(':memory:') if shadow else db
     if shadow:
         legacy_path=Path(os.environ.get('ASMARR_LEGACY_CODE','/opt/asmr-scraper/scraper.py'))
@@ -193,8 +204,20 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
         legacy_cfg=yaml.safe_load(baseline_cfg_path.read_text()) if baseline_cfg_path.exists() else cfg
         db.backup(working); working.row_factory=sqlite3.Row
     before_manifest=media_manifest(db)
-    before={r['key'] for r in working.execute('SELECT key FROM assets')}
     reference=sqlite3.connect(':memory:');db.backup(reference);reference.row_factory=sqlite3.Row
+    if shadow:
+        # Each daily comparison starts from the current legacy state, so the old
+        # writer may continue between observations without making parity stale.
+        snapshot=sqlite3.connect(':memory:')
+        with contextlib.closing(sqlite3.connect('file:/var/lib/asmr-scraper/state.db?mode=ro',uri=True)) as legacy_state:legacy_state.backup(snapshot)
+        for table in ['assets','downloads','aliases','meta','sources','runs']:
+            columns=[r[1] for r in snapshot.execute('PRAGMA table_info('+table+')')]
+            names=','.join(columns);rows=snapshot.execute('SELECT '+names+' FROM '+table).fetchall()
+            sql='INSERT OR REPLACE INTO '+table+'('+names+') VALUES('+','.join('?' for _ in columns)+')'
+            working.executemany(sql,rows);reference.executemany(sql,rows)
+        working.commit();reference.commit();snapshot.close()
+    before={r['key'] for r in working.execute('SELECT key FROM assets')}
+    baseline_meta=dict(working.execute('SELECT key,value FROM meta'))
     selected=['reddit','soundgasm','youtube','sfw'] if kind=='all' else [kind]
     selected=[k for k in selected if setting(db,'source.'+k+'.enabled','true')=='true']
     active=configured_discovery(db,cfg)
@@ -235,7 +258,7 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
     baseline=core.meta_get(db,'migration_media_manifest',before_manifest)
     after_manifest=media_manifest(db)
     unchanged=before_manifest==after_manifest and all(after_manifest['files'].get(k)==v for k,v in baseline['files'].items())
-    original_meta=dict(db.execute('SELECT key,value FROM meta'))
+    original_meta=baseline_meta
     checkpoint_changes={r['key']:r['value'] for r in working.execute('SELECT * FROM meta') if ('checkpoint' in r['key'] or '_seen:' in r['key']) and original_meta.get(r['key'])!=r['value']} if shadow else {}
     summary={'mode':'shadow' if shadow else 'production','sources':reports,'proposed':proposed,'playlists':playlists,'mediaUnchanged':unchanged,'checkpointChanges':checkpoint_changes}
     # Eligibility comes from the preserved exact parser implementation. A separate
@@ -256,14 +279,15 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
         comparison={'legacyImplementationSha256':digest(legacy_path),'discoveryParity':sorted(proposed,key=lambda r:r['key'])==sorted(reference_proposed,key=lambda r:r['key']),
                     'eligibilityAndSourceParity':simplified(reports)==simplified(reference_reports),
                     'checkpointCalculationParity':checkpoint_changes==reference_checkpoints,
-                    'productionCheckpointsUnchanged':dict(db.execute('SELECT key,value FROM meta'))==original_meta,
+                    'productionCheckpointsUnchanged':production_fingerprint()==production_before,
+                    'applicationCheckpointsUnchanged':dict(db.execute('SELECT key,value FROM meta'))==app_meta_before,
                     'mediaUnchanged':unchanged,'referenceSources':reference_reports,'referenceProposed':reference_proposed,
                     'playlistPreviewHealthy':playlists['status'] in {'preview','healthy','disabled'}}
         # Compare playlist calculations against the original database on the same
         # unchanged catalog. No Plex writes are permitted in either calculation.
         reference_playlists=plex_playlists.sync(reference,legacy_cfg,secrets,legacy,dry_run=True)
         comparison['playlistCalculationParity']=all(playlists.get(k)==reference_playlists.get(k) for k in ['tracks','categories','tagged','unclassified','status'])
-        clean=summary['status']=='healthy' and all(comparison[k] for k in ['discoveryParity','eligibilityAndSourceParity','checkpointCalculationParity','productionCheckpointsUnchanged','mediaUnchanged','playlistPreviewHealthy','playlistCalculationParity'])
+        clean=summary['status']=='healthy' and all(comparison[k] for k in ['discoveryParity','eligibilityAndSourceParity','checkpointCalculationParity','productionCheckpointsUnchanged','applicationCheckpointsUnchanged','mediaUnchanged','playlistPreviewHealthy','playlistCalculationParity'])
         with db:
             db.execute('INSERT INTO shadow_cycles(started,finished,result,clean,comparison) VALUES(?,?,?,?,?)',(started,time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),json.dumps(summary),int(clean),json.dumps(comparison)))
             for r in working.execute('SELECT * FROM sources'):
@@ -614,6 +638,26 @@ def dispatch(operation,args):
             indexed={p.get('file'):t.get('ratingKey') for t in rows for p in t.findall('.//Part')}
             missing=[r['saved_path'] for r in db.execute("SELECT saved_path FROM assets WHERE state='complete'") if r['saved_path'] not in indexed]
             return {'tracks':len(rows),'unindexed':missing,'indexedImported':db.execute("SELECT count(*) FROM assets WHERE state='complete'").fetchone()[0]-len(missing)}
+        if operation=='playlists-verify':
+            client=plex_playlists.Client(cfg,secrets);section=str(cfg['plex']['section_id'])
+            tracks=plex_playlists.all_items(client,'/library/sections/'+section+'/all','Track',type=10)
+            tracks=plex_playlists.details(client,[t.get('ratingKey') for t in tracks],section)
+            titles=dict(db.execute("SELECT saved_path,title FROM assets WHERE state='complete' AND saved_path IS NOT NULL"))
+            from categories import classify,metadata_text
+            expected={cat:set() for cat in cfg.get('playlists',{}).get('categories',list(CATEGORIES))}
+            for track in tracks:
+                originals=[titles[p.get('file')] for p in track.findall('.//Part') if p.get('file') in titles]
+                for cat in classify(metadata_text(track,originals)):
+                    if cat in expected:expected[cat].add(track.get('ratingKey'))
+            registry=core.meta_get(db,'managed_playlists',{});report=[]
+            for cat,record in registry.items():
+                key=record.get('id');detail=client.call('GET','/playlists/'+key).find('Playlist')
+                if detail is None:report.append({'category':cat,'id':key,'status':'missing'});continue
+                wanted=expected.get(cat,set());members=plex_playlists.all_items(client,'/playlists/'+key+'/items','Track')
+                actual={t.get('ratingKey') for t in members}
+                valid=detail.get('guid')==record.get('guid') and detail.get('smart')=='1' and plex_playlists.filter_matches(detail.get('content'),section,'ASMR: '+CATEGORIES[cat][0]) and actual==wanted
+                report.append({'category':cat,'id':key,'status':'ok' if valid else 'mismatch','members':len(actual),'expected':len(wanted)})
+            return {'status':'ok' if all(r['status']=='ok' for r in report) and len(report)==15 else 'degraded','managedCount':len(report),'playlists':report}
         raise ValueError('unknown_operation')
 
 

@@ -129,7 +129,7 @@ function App() {
   useEffect(() => {
     if (!auth) return;
     const hub = new HubConnectionBuilder()
-      .withUrl("/api/v1/events")
+      .withUrl("/api/v1/events", { headers: { "X-ASMarr-Request": "1" } })
       .withAutomaticReconnect()
       .configureLogging(LogLevel.Error)
       .build();
@@ -262,6 +262,18 @@ function App() {
     }
   };
   const toggle = async (c: Row, value: boolean) => {
+    if (creator)
+      setCreator({
+        ...creator,
+        creator: { ...creator.creator, monitored: value ? 1 : 0 },
+      });
+    setData((rows: any) =>
+      Array.isArray(rows)
+        ? rows.map((row: Row) =>
+            row.id === c.id ? { ...row, monitored: value ? 1 : 0 } : row,
+          )
+        : rows,
+    );
     await act("creators/" + c.id, "PUT", {
       monitored: value,
       profileId: c.profile_id,
@@ -384,6 +396,7 @@ function App() {
           {routes.map(([p, Icon]) => (
             <button
               key={p}
+              aria-label={p}
               className={page === p ? "active" : ""}
               onClick={() => navigate(p)}
             >
@@ -665,8 +678,18 @@ function App() {
                         type="checkbox"
                         checked={!!i.enabled}
                         onChange={async (e) => {
+                          const enabled = e.target.checked;
+                          setCreator({
+                            ...creator,
+                            identities: creator.identities.map(
+                              (identity: Row) =>
+                                identity.id === i.id
+                                  ? { ...identity, enabled: enabled ? 1 : 0 }
+                                  : identity,
+                            ),
+                          });
                           await act("identities/" + i.id, "PUT", {
-                            enabled: e.target.checked,
+                            enabled,
                           });
                           await openCreator(creator.creator);
                         }}
@@ -1097,11 +1120,21 @@ function App() {
                           <input
                             type="checkbox"
                             checked={c.enabled}
-                            onChange={(e) =>
-                              act("connectors/" + c.kind, "PUT", {
-                                enabled: e.target.checked,
-                              })
-                            }
+                            onChange={(e) => {
+                              const enabled = e.target.checked;
+                              setData({
+                                ...data,
+                                configuration: data.configuration.map(
+                                  (source: Row) =>
+                                    source.kind === c.kind
+                                      ? { ...source, enabled }
+                                      : source,
+                                ),
+                              });
+                              void act("connectors/" + c.kind, "PUT", {
+                                enabled,
+                              });
+                            }}
                           />{" "}
                           Enabled
                         </label>

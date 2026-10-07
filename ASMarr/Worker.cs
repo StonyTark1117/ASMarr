@@ -56,6 +56,7 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
                 "discovery" => await providers.Run("discover",new {shadow,kind=args.RootElement.TryGetProperty("kind",out var k)?k.GetString():"all"},timeout.Token),
                 "disk-scan" => await providers.Run("scan",new {},timeout.Token),
                 "plex-verify" => await providers.Run("plex-verify",new {},timeout.Token),
+                "playlists-verify" => await providers.Run("playlists-verify",new {},timeout.Token),
                 "plex" => shadow ? new {status="shadow",message="Plex writes disabled"} : (object)await providers.Run("plex",new {},timeout.Token),
                 "playlists" => await providers.Run("playlists",new {preview=shadow},timeout.Token),
                 "queue" => shadow ? new {status="shadow",message="Acquisitions disabled"} : (object)await providers.Run("process-queue",new {},timeout.Token),

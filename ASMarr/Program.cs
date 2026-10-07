@@ -124,7 +124,7 @@ api.MapPut("/tasks/{name}",(string name,TaskEdit t)=>{store.Execute("UPDATE task
 api.MapGet("/commands",()=>store.Query("SELECT * FROM commands ORDER BY created DESC LIMIT 100"));
 api.MapGet("/commands/{id}",(string id)=>store.Query("SELECT * FROM commands WHERE id=$id",("id",id)).FirstOrDefault());
 api.MapPost("/commands",(CommandInput c)=> {
-    if(!new[]{"migration","discovery","queue","disk-scan","plex","plex-verify","playlists","health","backup","source-test","search","grab","manual-import","rename-preview","integration-test"}.Contains(c.Name))return Results.BadRequest(new{error="Unknown command"});
+    if(!new[]{"migration","discovery","queue","disk-scan","plex","plex-verify","playlists","playlists-verify","health","backup","source-test","search","grab","manual-import","rename-preview","integration-test"}.Contains(c.Name))return Results.BadRequest(new{error="Unknown command"});
     if(store.Setting("mode")!="production"&&new[]{"grab","manual-import"}.Contains(c.Name))return Results.Conflict(new{error="Acquisition is disabled until audited cutover"});
     return Results.Accepted(value:new {id=store.Enqueue(c.Name,c.Arguments)});
 });

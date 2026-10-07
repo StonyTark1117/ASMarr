@@ -16,7 +16,7 @@ for source in ['/opt/asmr-scraper','/etc/asmr-scraper','/etc/systemd/system/asmr
     p=Path(source)
     dest=backup/p.relative_to('/')
     dest.parent.mkdir(parents=True,exist_ok=True)
-    if p.is_dir(): shutil.copytree(p,dest,ignore=shutil.ignore_patterns('__pycache__','state.db'))
+    if p.is_dir(): shutil.copytree(p,dest,ignore=shutil.ignore_patterns('__pycache__'))
     elif p.exists(): shutil.copy2(p,dest)
 with sqlite3.connect('file:/var/lib/asmr-scraper/state.db?mode=ro',uri=True) as src:
     with sqlite3.connect(backup/'state.db') as dst:src.backup(dst)
