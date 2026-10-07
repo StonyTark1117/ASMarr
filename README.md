@@ -100,5 +100,14 @@ requires three qualified daily observations and explicit `pre-cutover.json`
 test evidence. It leaves scheduling disabled after the bounded cycle until the
 remaining live production acceptance checks pass.
 
+Cutover captures Plex metadata immediately before production writes and compares
+it after the bounded cycle. The protected snapshots check every existing audio
+rating key, path, playback/rating field, metadata-lock flag, locked value,
+unrelated tag, and playlist identity. Manual playback or metadata edits during
+the window are flagged for review rather than silently accepted. Independent
+read-only checks are available with `ops/plex_invariants.py capture` and
+`ops/plex_invariants.py compare`; evidence files are exclusive-created under the
+protected acceptance directory and are never overwritten.
+
 Public packaging, additional media servers/download clients, multi-user accounts,
 and unattended application updates are deferred.

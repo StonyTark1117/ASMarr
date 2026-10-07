@@ -64,6 +64,12 @@ def apply():
     if not result.get('passed'):raise RuntimeError('Final delta migration failed')
     scan=run_command('disk-scan',300)
     if scan.get('missing') or scan.get('outside') or not scan.get('unchanged'):raise RuntimeError('Final media reconciliation failed')
+    from plex_invariants import runtime_snapshot,write_protected,compare
+    plex_before=runtime_snapshot()
+    stamp=dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    baseline_path=ACCEPTANCE/('plex-before-cutover-'+stamp+'.json')
+    write_protected(baseline_path,plex_before)
+    report['plexBaseline']=str(baseline_path)
     # Scheduler work is paused while permissions and execution mode change.
     subprocess.run(['systemctl','stop','asmarr'],check=True)
     with sqlite3.connect(DB) as db:
@@ -97,7 +103,10 @@ def apply():
         playlist_verification=run_command('playlists-verify',600)
         if playlist_verification.get('status')!='ok' or playlist_verification.get('managedCount')!=15:
             raise RuntimeError('The 15 managed playlists failed verification')
-        report.update(finalMigration=result,finalScan=scan,discovery=discovery,boundedCycle=cycle,plex=plex,playlists=playlists,indexing=indexing,playlistVerification=playlist_verification)
+        preservation=compare(plex_before,runtime_snapshot())
+        write_protected(ACCEPTANCE/('plex-preservation-'+stamp+'.json'),preservation)
+        if not preservation['passed']:raise RuntimeError('Plex preservation audit requires review before accepting cutover')
+        report.update(finalMigration=result,finalScan=scan,discovery=discovery,boundedCycle=cycle,plex=plex,playlists=playlists,indexing=indexing,playlistVerification=playlist_verification,plexPreservation=preservation)
         target=Path('/var/lib/asmarr/acceptance/cutover.json');target.write_text(json.dumps(report));target.chmod(0o600)
     finally:
         cfg['max_downloads_per_run']=original_limit;config.write_text(yaml.safe_dump(cfg))
