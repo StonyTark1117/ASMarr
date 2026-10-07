@@ -70,6 +70,20 @@ class AcquisitionTests(unittest.TestCase):
             search.assert_not_called();self.assertEqual(len(result['failed']),1)
         row=self.db.execute('SELECT attempts,retry_after,state FROM assets').fetchone()
         self.assertEqual(row['attempts'],1);self.assertEqual(row['state'],'failed');self.assertGreater(row['retry_after'],0)
+
+    def test_active_video_job_does_not_block_audio_acquisition(self):
+        self.db.execute("INSERT INTO queue VALUES('video',?,'video-hash','downloading','qbittorrent','{}','date','Video')",(self.key,))
+        with patch.object(b,'acquire',return_value={'status':'complete'}) as acquire,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+            result=b.process_queue(self.db,self.cfg)
+        acquire.assert_called_once_with(self.db,self.cfg,self.key)
+        self.assertEqual(result['saved'],[{'status':'complete'}])
+
+    def test_active_audio_job_still_prevents_duplicate_acquisition(self):
+        self.db.execute("INSERT INTO queue VALUES('audio',?,'audio-hash','downloading','qbittorrent','{}','date','Audio')",(self.key,))
+        with patch.object(b,'acquire') as acquire,patch.object(b,'search') as search,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+            result=b.process_queue(self.db,self.cfg)
+        acquire.assert_not_called();search.assert_not_called()
+        self.assertEqual(result['saved'],[])
     def test_terminal_direct_retry_enters_ranked_fallback(self):
         self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0")
         candidate={'guid':'fixture','indexerId':7,'autoGrab':True}

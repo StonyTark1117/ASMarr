@@ -611,7 +611,7 @@ def monitor_downloads(db,cfg):
 def process_queue(db,cfg):
     production(db);saved=[];failed=[];fallback=[]
     now=int(time.time())
-    rows=db.execute("SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE c.monitored=1 AND a.state IN ('pending','failed') AND a.retry_after<=? AND NOT EXISTS(SELECT 1 FROM queue q WHERE q.recording_key=a.key AND q.state NOT IN ('failed','removed')) AND NOT EXISTS(SELECT 1 FROM blocklist b WHERE b.recording_key=a.key AND b.download_id IS NULL) ORDER BY COALESCE(a.published,0) DESC LIMIT ?",(now,cfg.get('max_downloads_per_run',25))).fetchall()
+    rows=db.execute("SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE c.monitored=1 AND a.state IN ('pending','failed') AND a.retry_after<=? AND NOT EXISTS(SELECT 1 FROM queue q WHERE q.recording_key=a.key AND q.media_kind='Audio' AND q.state NOT IN ('failed','removed')) AND NOT EXISTS(SELECT 1 FROM blocklist b WHERE b.recording_key=a.key AND b.download_id IS NULL) ORDER BY COALESCE(a.published,0) DESC LIMIT ?",(now,cfg.get('max_downloads_per_run',25))).fetchall()
     for row in rows:
         rules=profile(db,row)
         if not json.loads(row['targets'] or '[]') or row['attempts']>=rules.get('directRetries',3):
