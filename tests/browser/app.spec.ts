@@ -176,3 +176,25 @@ test("SignalR pushes live command state to queue screen", async ({
     page.getByText("No commands running. Your library is up to date."),
   ).toBeVisible();
 });
+
+test("system status updates and failed video workspace", async ({ page }) => {
+  await page.route("**/api/v1/video/history", route => route.fulfill({
+    json: { backfills: [], assets: [
+      { key: "fixture:failed-video", title: "Failed visual copy", creator: "Quiet Creator", audio_state: "complete", video_state: "failed", state: "complete" },
+      { key: "fixture:imported-video", title: "Successful visual copy", creator: "Quiet Creator", audio_state: "complete", video_state: "imported", state: "complete" }
+    ] }
+  }));
+  await login(page);
+  await page.getByRole("button", { name: "System", exact: true }).click();
+  await page.getByRole("button", { name: "Status", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "System status", exact: true })).toBeVisible();
+  await expect(page.getByText("Runtime", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Updates", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Application updates" })).toBeVisible();
+  await expect(page.getByText("Disabled", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Videos", exact: true }).click();
+  await page.getByRole("button", { name: "Failed", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Failed or unavailable videos" })).toBeVisible();
+  await expect(page.getByText("Failed visual copy", { exact: true })).toBeVisible();
+  await expect(page.getByText("Successful visual copy", { exact: true })).not.toBeVisible();
+});

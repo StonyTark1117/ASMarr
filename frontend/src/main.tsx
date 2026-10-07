@@ -165,7 +165,7 @@ function App() {
         Videos:
           tab === "Queue"
             ? "video/queue"
-            : tab === "History"
+            : tab === "History" || tab === "Failed"
               ? "video/history"
               : "video/wanted",
         Wanted: "wanted",
@@ -183,7 +183,11 @@ function App() {
                   ? "integrations"
                   : "auth",
         System:
-          tab === "Logs"
+          tab === "Status"
+            ? "system/status"
+            : tab === "Updates"
+              ? "system/updates"
+              : tab === "Logs"
             ? "logs"
             : tab === "Backups"
               ? "backups"
@@ -1070,7 +1074,7 @@ function App() {
           ) : page === "Videos" ? (
             <>
               <div className="tabs">
-                {["Wanted", "Queue", "History"].map((t) => (
+                {["Wanted", "Queue", "History", "Failed"].map((t) => (
                   <button className={tab === t ? "active" : ""} onClick={() => setTab(t)} key={t}>{t}</button>
                 ))}
               </div>
@@ -1101,6 +1105,13 @@ function App() {
                     <div className="source-row" key={job.id}><Clock size={16}/><b>Full-history scan</b><Badge value={job.state}/><span>{when(job.finished || job.updated)}</span></div>
                   ))}
                   {data?.assets && recordingTable(data.assets)}
+                </>
+              )}
+              {tab === "Failed" && (
+                <>
+                  <h2>Failed or unavailable videos</h2>
+                  <p className="muted">Failed transfers can be retried from recording details. Deleted or unsupported releases remain visible without blocking the remaining history scan.</p>
+                  {data?.assets && recordingTable(data.assets.filter((asset: Row) => ["failed", "unavailable"].includes(asset.video_state || asset.media_state || asset.state)))}
                 </>
               )}
             </>
@@ -1591,7 +1602,7 @@ function App() {
           ) : page === "System" ? (
             <>
               <div className="tabs">
-                {["Tasks", "Logs", "Health", "Backups", "Shadow cycles"].map(
+                {["Status", "Tasks", "Logs", "Health", "Backups", "Shadow cycles", "Updates"].map(
                   (t) => (
                     <button
                       className={tab === t ? "active" : ""}
@@ -1604,7 +1615,28 @@ function App() {
                 )}
               </div>
               <section className="panel">
-                {tab === "Tasks" ? (
+                {tab === "Status" ? (
+                  <>
+                    <h2>System status</h2>
+                    <div className="source-row"><b>Version</b><span>{data?.version}</span></div>
+                    <div className="source-row"><b>Runtime</b><span>{data?.runtime}</span></div>
+                    <div className="source-row"><b>Execution mode</b><Badge value={data?.mode || "unknown"} /></div>
+                    <div className="source-row"><b>Scheduler</b><span>{data?.scheduler}</span></div>
+                    <div className="source-row"><b>Audio root</b><code>{data?.root}</code></div>
+                    <div className="source-row"><b>Video root</b><code>{data?.videoRoot}</code></div>
+                    <div className="source-row"><b>Audio free space</b><span>{((data?.disk?.available || 0) / 1073741824).toFixed(1)} GiB</span></div>
+                    <div className="source-row"><b>Qualified shadow days</b><span>{data?.qualifiedShadowDays || 0} / 3</span></div>
+                  </>
+                ) : tab === "Updates" ? (
+                  <>
+                    <h2>Application updates</h2>
+                    <div className="source-row"><b>Installed version</b><span>{data?.version}</span></div>
+                    <div className="source-row"><b>Release channel</b><span>{data?.channel}</span></div>
+                    <div className="source-row"><b>Automatic updates</b><span>{data?.automatic ? "Enabled" : "Disabled"}</span></div>
+                    <p className="muted">{data?.message}</p>
+                    <p>Deployments require a verified build, a rollback backup, and the rollout acceptance gates. This page does not install or restart the application.</p>
+                  </>
+                ) : tab === "Tasks" ? (
                   <>
                     <div className="section-heading">
                       <h2>Scheduled tasks</h2>
