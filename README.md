@@ -99,6 +99,12 @@ subsequent application changes must pass the combined regression suite again.
 requires three qualified daily observations and explicit `pre-cutover.json`
 test evidence. It leaves scheduling disabled after the bounded cycle until the
 remaining live production acceptance checks pass.
+Approval also records `testedCommit` and `artifactSha256`, matching the protected
+`acceptance/deployed-release.json` manifest (`sourceCommit`, `artifactSha256`).
+`ops/release_integrity.py` fingerprints the entire deployed application tree,
+including managed DLLs, provider source and compiled UI, not just the .NET
+apphost. A changed tree or mismatched tested commit prevents cutover; generated
+Python caches are excluded.
 
 Cutover captures Plex metadata immediately before production writes and compares
 it after the bounded cycle. The protected snapshots check every existing audio

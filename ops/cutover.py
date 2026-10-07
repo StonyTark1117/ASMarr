@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -17,6 +18,7 @@ import yaml
 DB=Path('/var/lib/asmarr/asmarr.db')
 ACCEPTANCE=Path('/var/lib/asmarr/acceptance')
 PRODUCTION_OVERRIDE=Path('/etc/systemd/system/asmarr.service.d/production.conf')
+APPLICATION=Path('/opt/asmarr')
 PARITY_FIELDS=('discoveryParity','eligibilityAndSourceParity','checkpointCalculationParity',
                'productionCheckpointsUnchanged','applicationCheckpointsUnchanged','mediaUnchanged',
                'playlistPreviewHealthy','playlistCalculationParity')
@@ -44,9 +46,17 @@ def preflight(now=None):
         evidence_path=ACCEPTANCE/'pre-cutover.json'
         evidence=json.loads(evidence_path.read_text()) if evidence_path.exists() else {}
         tests_passed=all(evidence.get(k) is True for k in ['providerFixtures','sqliteIntegration','browserAcceptance','playlistRecovery'])
+        manifest_path=ACCEPTANCE/'deployed-release.json'
+        deployment=json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        source=deployment.get('sourceCommit','')
+        expected=deployment.get('artifactSha256','')
+        release_matches=False
+        if re.fullmatch(r'[a-f0-9]{40}',source) and re.fullmatch(r'[a-f0-9]{64}',expected):
+            from release_integrity import artifact_hash
+            release_matches=evidence.get('testedCommit')==source and evidence.get('artifactSha256')==expected and artifact_hash(APPLICATION)==expected
         mode=db.execute("SELECT value FROM settings WHERE key='mode'").fetchone()
-        result={'mode':mode[0] if mode else None,'threeDailyShadowCycles':three_days,'qualifiedDays':list(daily),'migrationPassed':bool(audit and json.loads(audit[0]).get('passed')),'preCutoverTestsPassed':tests_passed,'integrity':db.execute('PRAGMA integrity_check').fetchone()[0]}
-        result['ready']=result['mode']=='shadow' and three_days and result['migrationPassed'] and tests_passed and result['integrity']=='ok'
+        result={'mode':mode[0] if mode else None,'threeDailyShadowCycles':three_days,'qualifiedDays':list(daily),'migrationPassed':bool(audit and json.loads(audit[0]).get('passed')),'preCutoverTestsPassed':tests_passed,'testedDeploymentMatches':release_matches,'integrity':db.execute('PRAGMA integrity_check').fetchone()[0]}
+        result['ready']=result['mode']=='shadow' and three_days and result['migrationPassed'] and tests_passed and release_matches and result['integrity']=='ok'
         return result
 
 def apply():

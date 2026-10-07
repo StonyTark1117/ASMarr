@@ -13,6 +13,8 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('cutover_ops', Path(__file__).resolve().parents[1] / 'ops/cutover.py')
 cutover = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cutover)
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'ops'))
+from release_integrity import artifact_hash
 
 
 class CutoverSafetyTests(unittest.TestCase):
@@ -20,7 +22,7 @@ class CutoverSafetyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.paths = patch.multiple(cutover, DB=self.root/'state.db', ACCEPTANCE=self.root/'acceptance',
-                                    PRODUCTION_OVERRIDE=self.root/'units'/'production.conf')
+                                    PRODUCTION_OVERRIDE=self.root/'units'/'production.conf',APPLICATION=self.root/'app')
         self.paths.start()
         cutover.ACCEPTANCE.mkdir()
         with sqlite3.connect(cutover.DB) as db:
@@ -33,6 +35,10 @@ class CutoverSafetyTests(unittest.TestCase):
             db.execute("INSERT INTO tasks VALUES('discovery',0)")
         self.now = dt.datetime(2026,10,10,12,tzinfo=dt.timezone.utc)
         evidence = dict.fromkeys(['providerFixtures','sqliteIntegration','browserAcceptance','playlistRecovery'], True)
+        cutover.APPLICATION.mkdir();(cutover.APPLICATION/'ASMarr.dll').write_bytes(b'tested application')
+        digest=artifact_hash(cutover.APPLICATION)
+        evidence.update(testedCommit='a'*40,artifactSha256=digest)
+        (cutover.ACCEPTANCE/'deployed-release.json').write_text(json.dumps({'sourceCommit':'a'*40,'artifactSha256':digest}))
         (cutover.ACCEPTANCE/'pre-cutover.json').write_text(json.dumps(evidence))
 
     def tearDown(self):
@@ -75,6 +81,28 @@ class CutoverSafetyTests(unittest.TestCase):
         for day in (8,9,10): self.cycle(f'2026-10-{day:02d}T11:00:00Z')
         with sqlite3.connect(cutover.DB) as db:db.execute("UPDATE settings SET value='production'")
         self.assertFalse(cutover.preflight(self.now)['ready'])
+
+    def test_changed_application_dll_invalidates_otherwise_green_approval(self):
+        for day in (8,9,10):self.cycle(f'2026-10-{day:02d}T11:00:00Z')
+        (cutover.APPLICATION/'ASMarr.dll').write_bytes(b'unverified replacement')
+        report=cutover.preflight(self.now)
+        self.assertFalse(report['testedDeploymentMatches']);self.assertFalse(report['ready'])
+
+    def test_stale_test_commit_does_not_approve_another_deployment(self):
+        for day in (8,9,10):self.cycle(f'2026-10-{day:02d}T11:00:00Z')
+        manifest=cutover.ACCEPTANCE/'deployed-release.json'
+        value=json.loads(manifest.read_text());value['sourceCommit']='b'*40;manifest.write_text(json.dumps(value))
+        self.assertFalse(cutover.preflight(self.now)['ready'])
+
+    def test_bytecode_cache_does_not_invalidate_immutable_release(self):
+        before=artifact_hash(cutover.APPLICATION)
+        cache=cutover.APPLICATION/'providers'/'__pycache__';cache.mkdir(parents=True)
+        (cache/'scraper.pyc').write_bytes(b'runtime bytecode')
+        self.assertEqual(before,artifact_hash(cutover.APPLICATION))
+
+    def test_symlink_outside_application_is_never_hashed(self):
+        (cutover.APPLICATION/'external').symlink_to(self.root/'state.db')
+        with self.assertRaises(ValueError):artifact_hash(cutover.APPLICATION)
 
     def test_readonly_preflight_does_not_create_missing_database(self):
         cutover.DB=self.root/'missing.db'
