@@ -121,6 +121,19 @@ class VideoTests(unittest.TestCase):
                                 {'provider':'youtube','provider_id':'abcdefghijk'}, importer)
         self.assertTrue(result['hasAudio']); self.assertEqual(calls, [('recording','.m4a')])
 
+    def test_existing_audio_is_never_overwritten_or_reimported(self):
+        existing = self.audio / 'existing.m4a'; existing.write_bytes(b'preserved-audio')
+        self.db.execute("UPDATE media_assets SET state='imported',saved_path=? WHERE media_kind='Audio'",
+                        (str(existing),))
+        source = self.video_file(audio=True)
+        importer = Mock()
+        v.import_video(self.db, self.cfg, 'recording', source,
+                       {'provider':'youtube','provider_id':'abcdefghijk'}, importer)
+        importer.assert_not_called()
+        row = self.db.execute("SELECT state,saved_path FROM media_assets WHERE media_kind='Audio'").fetchone()
+        self.assertEqual((row['state'],row['saved_path']), ('imported',str(existing)))
+        self.assertEqual(existing.read_bytes(), b'preserved-audio')
+
     def test_audio_derivation_failure_does_not_fail_imported_video(self):
         source = self.video_file(audio=True)
         def importer(*_): raise ValueError('audio_import_failed')
@@ -156,6 +169,17 @@ class VideoTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 v.import_video(self.db, self.cfg, 'recording', source, {'provider':'youtube','provider_id':'id'})
         self.assertFalse(list(self.video.rglob('*.asmarr-part'))); self.assertTrue(source.exists())
+
+    def test_collision_never_replaces_an_existing_video(self):
+        first = self.video_file('first.mp4')
+        candidate = {'provider':'youtube','provider_id':'abcdefghijk'}
+        imported = Path(v.import_video(self.db, self.cfg, 'recording', first, candidate)['path'])
+        original = imported.read_bytes()
+        second = self.video_file('second.mp4', audio=True)
+        with self.assertRaisesRegex(ValueError, 'destination_conflict'):
+            v.import_video(self.db, self.cfg, 'recording', second, candidate)
+        self.assertEqual(imported.read_bytes(), original)
+        self.assertFalse(list(self.video.rglob('*.asmarr-part')))
 
     def test_low_space_pauses_without_starting_transfer(self):
         self.cfg['video_free_space_gib'] = 10**12
@@ -323,6 +347,19 @@ class VideoTests(unittest.TestCase):
         with patch.object(v.requests, 'get', return_value=self.plex_response(valid_section)):
             with self.assertRaisesRegex(ValueError, 'libraries_overlap'):
                 v.plex_library_validation(self.cfg, {'plex_token':'secret'})
+
+    def test_plex_refresh_targets_only_the_configured_video_section(self):
+        self.cfg['plex'] = {'url':'http://plex:32400','video':{'section_id':9}}
+        with self.db:
+            v._meta_set(self.db, 'plex_video_pending_paths', ['/video/one.mp4'])
+        response = self.plex_response('<MediaContainer/>')
+        with patch.object(v, 'plex_library_validation', return_value={'status':'healthy'}), \
+             patch.object(v.requests, 'get', return_value=response) as get:
+            result = v.plex_refresh(self.db, self.cfg, {'plex_token':'secret'})
+        self.assertEqual(result['status'], 'refresh_requested')
+        self.assertEqual(result['paths'], 1)
+        self.assertEqual(get.call_args.args[0], 'http://plex:32400/library/sections/9/refresh')
+        self.assertEqual(v._meta_get(self.db, 'plex_video_pending_paths'), [])
 
 
 if __name__ == '__main__': unittest.main()
