@@ -130,6 +130,29 @@ tree, blocks network connections, and runs six temporary-database outage/recover
 checks using the installed providers. This is runtime fixture evidence only—not
 a substitute for live direct/fallback canaries or a production repeat cycle.
 
+Final scheduler enablement uses `ops/production_acceptance.py`. Its default is a
+read-only audit. Protected `production-acceptance.json` must name the current
+`testedCommit` and `artifactSha256`, distinct `directKey`/`fallbackKey`, their
+completed queue `directCommandId`/`fallbackCommandId`, fresh `indexCommandId`
+(`plex-verify`) and `playlistCommandId` (`playlists-verify`), and protected
+`outageFile`/`repeatFile` evidence references. These are real record/command IDs,
+not pass/fail declarations. The verifier independently checks imported media,
+torrent identity, Plex paths, migration preservation, release binding, and the
+disabled legacy timer.
+
+For the repeat evidence, capture protected before/after snapshots with
+`--snapshot-output /var/lib/asmarr/acceptance/<new-name>.json`, around completed
+`queue`, `plex`, and `playlists` commands while production scheduling remains
+held. The repeat report contains `testedCommit`, `artifactSha256`, `startedAt`
+and `finishedAt` from those snapshots, their `state` objects as `before`/`after`,
+and the three actual command IDs under `commands`. Unknown/time-out commands
+remain pending; retain their IDs and do not submit replacement runs. The final
+gate requires zero new imports/grabs or playlist changes and snapshot digests
+still matching current state. Only `--enable-scheduler`, after every gate passes,
+restores the saved task enablement states with future run times. It rechecks after
+stopping the worker, records exclusive approval, and restarts the service even
+when that recheck fails. Live health must still be verified after restart.
+
 Cutover captures Plex metadata immediately before production writes and compares
 it after the bounded cycle. The protected snapshots check every existing audio
 rating key, path, playback/rating field, metadata-lock flag, locked value,

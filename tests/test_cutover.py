@@ -122,6 +122,11 @@ class CutoverSafetyTests(unittest.TestCase):
         with patch.dict(sys.modules,{'smoke':smoke}):
             with self.assertRaises(RuntimeError):cutover.run_command('discovery',1)
 
+    def test_plex_error_code_is_not_successful_indexing(self):
+        smoke=types.SimpleNamespace(command=lambda name:1,wait=lambda *args:{'status':'http_503'})
+        with patch.dict(sys.modules,{'smoke':smoke}):
+            with self.assertRaises(RuntimeError):cutover.run_command('plex',1)
+
     def test_rollback_restores_readonly_unit_and_saved_schedule_without_touching_media(self):
         with sqlite3.connect(cutover.DB) as db:db.execute("UPDATE settings SET value='production'")
         cutover.PRODUCTION_OVERRIDE.parent.mkdir()

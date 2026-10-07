@@ -30,6 +30,8 @@ def run_command(name, deadline):
         # An observation timeout is not completion. Keep the durable command ID
         # available to the operator; never enqueue another run automatically.
         raise RuntimeError(f'{name} did not finish successfully: {result}')
+    if name=='plex' and result.get('status') not in {'not_needed','indexed'}:
+        raise RuntimeError('Plex did not confirm indexing: '+str(result.get('status')))
     return result
 
 def preflight(now=None):
@@ -88,6 +90,8 @@ def apply():
         if transition.exists():raise RuntimeError('Existing transition journal requires review before another cutover')
         saved={'taskEnabled':dict(db.execute('SELECT name,enabled FROM tasks')),
                'startedAt':dt.datetime.now(dt.timezone.utc).isoformat()}
+        deployment=json.loads((ACCEPTANCE/'deployed-release.json').read_text())
+        report.update(testedCommit=deployment['sourceCommit'],artifactSha256=deployment['artifactSha256'],startedAt=saved['startedAt'])
         with transition.open('w') as output:
             transition.chmod(0o600);json.dump(saved,output)
         db.execute("UPDATE settings SET value='production' WHERE key='mode'")
