@@ -153,6 +153,17 @@ restores the saved task enablement states with future run times. It rechecks aft
 stopping the worker, records exclusive approval, and restarts the service even
 when that recheck fails. Live health must still be verified after restart.
 
+Shadow updates use `ops/shadow_deploy.py --payload <published-archive> --commit
+<full-source-sha> --ci-run <run-id> --artifact-sha256 <published-tree-sha256>
+--ops-commit <full-tooling-sha>`. It verifies the exact successful GitHub run,
+rejects unsafe/incomplete archives, requires an idle read-only shadow baseline,
+and preserves online database/config/unit backups and the previous application.
+Asset rows, audio states, checkpoints, source settings, task settings and media
+statistics must match after restart. Creator completed-audio totals are checked
+against all saved paths, including legacy `complete` states. Failed payloads are
+retained and the previous application is restored without rewriting the database
+or media. This updater cannot perform a production cutover.
+
 Cutover captures Plex metadata immediately before production writes and compares
 it after the bounded cycle. The protected snapshots check every existing audio
 rating key, path, playback/rating field, metadata-lock flag, locked value,
