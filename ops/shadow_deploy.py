@@ -26,6 +26,7 @@ APPLICATION=Path('/opt/asmarr')
 CONFIG=Path('/etc/asmarr')
 ACCEPTANCE=Path('/var/lib/asmarr/acceptance')
 BACKUPS=Path('/root/asmarr-rollout-backups')
+RUNTIME_RELEASE=DB.parent/'deployed-release-runtime.json'
 
 
 def digest(value):
@@ -106,14 +107,22 @@ def deploy(payload,commit,ci_run,expected_hash,ops_commit):
         path=backup/unit;path.write_bytes(result.stdout);path.chmod(0o600)
     for name in ('deployed-release.json','pre-cutover.json'):
         if (ACCEPTANCE/name).exists():shutil.copy2(ACCEPTANCE/name,backup/name)
+    if RUNTIME_RELEASE.exists():shutil.copy2(RUNTIME_RELEASE,backup/RUNTIME_RELEASE.name)
     # Check again after staging/backup; an active command must finish naturally.
     validate_idle(invariants())
     subprocess.run(['systemctl','stop','asmarr'],check=True)
     previous=backup/'application'
-    old_moved=False
+    old_moved=False;runtime_replaced=False
     try:
         APPLICATION.rename(previous);old_moved=True
         stage.rename(APPLICATION)
+        deployed_at=dt.datetime.now(dt.timezone.utc).isoformat()
+        runtime={'sourceCommit':commit,'artifactSha256':expected_hash,'deployedAt':deployed_at}
+        runtime_temporary=RUNTIME_RELEASE.with_name('deployed-release-runtime-'+stamp+'.tmp')
+        with runtime_temporary.open('x') as output:
+            runtime_temporary.chmod(0o640);json.dump(runtime,output,indent=2)
+        owner=DB.stat();os.chown(runtime_temporary,owner.st_uid,owner.st_gid)
+        runtime_temporary.replace(RUNTIME_RELEASE);runtime_replaced=True
         subprocess.run(['systemctl','start','asmarr'],check=True)
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         healthy=False
@@ -137,7 +146,7 @@ def deploy(payload,commit,ci_run,expected_hash,ops_commit):
         if sum(row['audio_completed'] for row in response.json())!=before['savedPaths']:
             raise RuntimeError('creator_audio_totals_do_not_match_imported_library')
         manifest={'sourceCommit':commit,'opsCommit':ops_commit,'artifactSha256':expected_hash,
-                  'deployedAt':dt.datetime.now(dt.timezone.utc).isoformat(),'mode':'shadow',
+                  'deployedAt':deployed_at,'mode':'shadow',
                   'ciRun':f'https://github.com/StonyTark1117/ASMarr/actions/runs/{ci_run}',
                   'before':before,'after':after,'backup':str(backup),'liveSmokePassed':True}
         ACCEPTANCE.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -152,6 +161,10 @@ def deploy(payload,commit,ci_run,expected_hash,ops_commit):
         if old_moved:
             if APPLICATION.exists():APPLICATION.rename(backup/'failed-application')
             previous.rename(APPLICATION)
+        if runtime_replaced:
+            saved_runtime=backup/RUNTIME_RELEASE.name
+            if saved_runtime.exists():shutil.copy2(saved_runtime,RUNTIME_RELEASE)
+            else:RUNTIME_RELEASE.unlink(missing_ok=True)
         subprocess.run(['systemctl','start','asmarr'],check=True)
         raise
 

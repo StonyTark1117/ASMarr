@@ -15,10 +15,9 @@ Assert(store.Query("SELECT * FROM tasks").Count==9,"repeat migration does not du
 Assert(store.Query("SELECT * FROM video_quality_profiles").Count==6,"built-in video profiles are seeded once");
 Assert(store.Query("SELECT monitor_video FROM creators").Count==0,"migration does not invent creators or enable video");
 Assert(store.Setting("mode")=="shadow","first boot gates production writes");
-var acceptance=Path.Combine(store.Root,"acceptance");Directory.CreateDirectory(acceptance);
 var deployedAt=new DateTimeOffset(2026,10,8,0,0,0,TimeSpan.Zero);
 var sourceCommit=new string('a',40);var artifactHash=new string('b',64);
-File.WriteAllText(Path.Combine(acceptance,"deployed-release.json"),System.Text.Json.JsonSerializer.Serialize(new {sourceCommit,artifactSha256=artifactHash,deployedAt}));
+File.WriteAllText(Path.Combine(store.Root,"deployed-release-runtime.json"),System.Text.Json.JsonSerializer.Serialize(new {sourceCommit,artifactSha256=artifactHash,deployedAt}));
 var parity=new Dictionary<string,object?> {
     ["sourceCommit"]=sourceCommit,["artifactSha256"]=artifactHash,["legacyImplementationSha256"]=new string('c',64),
     ["discoveryParity"]=true,["eligibilityAndSourceParity"]=true,["checkpointCalculationParity"]=true,

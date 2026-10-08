@@ -158,6 +158,12 @@ artifact hash. Cutover counts only cycles produced by the current exact release
 at or after its protected deployment timestamp; observations from an older
 binary can never approve a newer one.
 
+The root-only acceptance manifest remains the cutover authority. Deployment also
+publishes `/var/lib/asmarr/deployed-release-runtime.json`, containing only the
+commit, artifact hash and deployment timestamp, with the database owner's read
+permissions. The service uses that non-secret identity for shadow evidence and
+status reporting; deployment rollback restores it atomically with the binary.
+
 Shadow updates use `ops/shadow_deploy.py --payload <published-archive> --commit
 <full-source-sha> --ci-run <run-id> --artifact-sha256 <published-tree-sha256>
 --ops-commit <full-tooling-sha>`. It verifies the exact successful GitHub run,

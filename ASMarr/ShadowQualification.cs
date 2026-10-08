@@ -15,7 +15,7 @@ public static class ShadowQualification
     {
         try
         {
-            var manifestPath=Path.Combine(store.Root,"acceptance","deployed-release.json");
+            var manifestPath=Path.Combine(store.Root,"deployed-release-runtime.json");
             using var manifest=JsonDocument.Parse(File.ReadAllText(manifestPath));
             var root=manifest.RootElement;
             var source=root.GetProperty("sourceCommit").GetString();
@@ -42,6 +42,7 @@ public static class ShadowQualification
             return days.Count;
         }
         catch(IOException) { return 0; }
+        catch(UnauthorizedAccessException) { return 0; }
         catch(JsonException) { return 0; }
         catch(InvalidOperationException) { return 0; }
         catch(KeyNotFoundException) { return 0; }

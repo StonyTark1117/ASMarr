@@ -52,7 +52,9 @@ def has_table(db,name):
 
 
 def deployed_release_identity():
-    path=STATE/'acceptance'/'deployed-release.json'
+    # This minimal non-secret runtime identity is readable by the service.
+    # Root-only acceptance evidence remains under STATE/acceptance.
+    path=STATE/'deployed-release-runtime.json'
     try:
         value=json.loads(path.read_text())
     except (OSError,ValueError,json.JSONDecodeError):

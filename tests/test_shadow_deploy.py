@@ -64,6 +64,7 @@ class ShadowDeploymentTests(unittest.TestCase):
         config=self.root/'config';config.mkdir();(config/'auth.json').write_text('{"apiKey":"fixture-only"}')
         state=self.root/'state.db'
         with sqlite3.connect(state) as db:db.execute('CREATE TABLE original(value TEXT)');db.execute("INSERT INTO original VALUES('preserve')")
+        runtime=self.root/'deployed-release-runtime.json';runtime.write_text('{"sourceCommit":"old"}')
         baseline={'mode':'shadow','integrity':'ok','activeCommands':0,'videoOptIns':0,'videoAssets':0,'videoCandidates':0,'videoBackfills':0,'queueRows':0,'savedPaths':1}
         def request(url,**kwargs):
             if url.startswith('https://api.github.com'):
@@ -72,7 +73,7 @@ class ShadowDeploymentTests(unittest.TestCase):
             return Response([{'audio_completed':1}])
         def system(args,**kwargs):
             return type('Result',(),{'returncode':0,'stdout':'/mnt/cephfs/media/asmr /mnt/cephfs/media/asmr-video /mnt/downloads/asmarr' if 'show' in args else b'unit'})()
-        patches=[patch.multiple(deploy,DB=state,APPLICATION=application,CONFIG=config,ACCEPTANCE=self.root/'acceptance',BACKUPS=self.root/'backups'),patch.object(deploy,'invariants',return_value=baseline),patch.object(deploy,'artifact_hash',return_value='b'*64),patch.object(deploy.os,'chown'),patch.object(deploy.requests,'get',side_effect=request),patch.object(deploy.subprocess,'run',side_effect=system),patch.object(deploy.time,'sleep')]
+        patches=[patch.multiple(deploy,DB=state,APPLICATION=application,CONFIG=config,ACCEPTANCE=self.root/'acceptance',BACKUPS=self.root/'backups',RUNTIME_RELEASE=runtime),patch.object(deploy,'invariants',return_value=baseline),patch.object(deploy,'artifact_hash',return_value='b'*64),patch.object(deploy.os,'chown'),patch.object(deploy.requests,'get',side_effect=request),patch.object(deploy.subprocess,'run',side_effect=system),patch.object(deploy.time,'sleep')]
         for value in patches:value.start();self.addCleanup(value.stop)
         return application,state
 
@@ -83,12 +84,16 @@ class ShadowDeploymentTests(unittest.TestCase):
         self.assertTrue((Path(report['backup'])/'application/old-code').is_file())
         with sqlite3.connect(Path(report['backup'])/'state.db') as db:self.assertEqual(db.execute('SELECT value FROM original').fetchone()[0],'preserve')
         self.assertEqual(json.loads((self.root/'acceptance/deployed-release.json').read_text())['sourceCommit'],'a'*40)
+        runtime=json.loads((self.root/'deployed-release-runtime.json').read_text())
+        self.assertEqual((runtime['sourceCommit'],runtime['artifactSha256']),('a'*40,'b'*64))
+        self.assertEqual((self.root/'deployed-release-runtime.json').stat().st_mode&0o777,0o640)
         self.assertTrue((application/'ASMarr.dll').is_file())
 
     def test_unhealthy_release_restores_previous_application_without_db_rewrite(self):
         application,state=self.fixture_deploy(healthy=False)
         with self.assertRaisesRegex(RuntimeError,'healthy'):deploy.deploy(self.archive,'a'*40,123,'b'*64,'c'*40)
         self.assertTrue((application/'old-code').is_file())
+        self.assertEqual(json.loads((self.root/'deployed-release-runtime.json').read_text()),{'sourceCommit':'old'})
         self.assertTrue(list((self.root/'backups').glob('*/failed-application/ASMarr.dll')))
         with sqlite3.connect(state) as db:self.assertEqual(db.execute('SELECT value FROM original').fetchone()[0],'preserve')
 
