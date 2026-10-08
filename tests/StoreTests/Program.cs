@@ -15,6 +15,22 @@ Assert(store.Query("SELECT * FROM tasks").Count==9,"repeat migration does not du
 Assert(store.Query("SELECT * FROM video_quality_profiles").Count==6,"built-in video profiles are seeded once");
 Assert(store.Query("SELECT monitor_video FROM creators").Count==0,"migration does not invent creators or enable video");
 Assert(store.Setting("mode")=="shadow","first boot gates production writes");
+var acceptance=Path.Combine(store.Root,"acceptance");Directory.CreateDirectory(acceptance);
+var deployedAt=new DateTimeOffset(2026,10,8,0,0,0,TimeSpan.Zero);
+var sourceCommit=new string('a',40);var artifactHash=new string('b',64);
+File.WriteAllText(Path.Combine(acceptance,"deployed-release.json"),System.Text.Json.JsonSerializer.Serialize(new {sourceCommit,artifactSha256=artifactHash,deployedAt}));
+var parity=new Dictionary<string,object?> {
+    ["sourceCommit"]=sourceCommit,["artifactSha256"]=artifactHash,["legacyImplementationSha256"]=new string('c',64),
+    ["discoveryParity"]=true,["eligibilityAndSourceParity"]=true,["checkpointCalculationParity"]=true,
+    ["productionCheckpointsUnchanged"]=true,["applicationCheckpointsUnchanged"]=true,["mediaUnchanged"]=true,
+    ["playlistPreviewHealthy"]=true,["playlistCalculationParity"]=true
+};
+store.Execute("INSERT INTO shadow_cycles(started,finished,result,clean,comparison) VALUES($started,$started,'{}',1,$comparison)",("started","2026-10-08T01:00:00Z"),("comparison",System.Text.Json.JsonSerializer.Serialize(parity)));
+store.Execute("INSERT INTO shadow_cycles(started,finished,result,clean,comparison) VALUES($started,$started,'{}',1,$comparison)",("started","2026-10-07T01:00:00Z"),("comparison",System.Text.Json.JsonSerializer.Serialize(parity)));
+parity["sourceCommit"]=new string('d',40);
+store.Execute("INSERT INTO shadow_cycles(started,finished,result,clean,comparison) VALUES($started,$started,'{}',1,$comparison)",("started","2026-10-09T01:00:00Z"),("comparison",System.Text.Json.JsonSerializer.Serialize(parity)));
+store.Execute("INSERT INTO shadow_cycles(started,finished,result,clean,comparison) VALUES($started,$started,'{}',1,'not-json')",("started","2026-10-10T01:00:00Z"));
+Assert(ShadowQualification.Count(store)==1,"status counts only current-release post-deployment shadow evidence");
 var leases=await Task.WhenAll(Enumerable.Range(0,10).Select(i=>Task.Run(()=>store.TryAcquireLease("test-provider",i.ToString(),TimeSpan.FromMinutes(1)))));
 Assert(leases.Count(x=>x)==1,"concurrent tasks have exactly one lease holder");
 string owner=store.Query("SELECT owner FROM task_locks WHERE name='test-provider'")[0]["owner"]!.ToString()!;
