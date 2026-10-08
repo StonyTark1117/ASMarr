@@ -29,6 +29,7 @@ class AcquisitionTests(unittest.TestCase):
         CREATE TABLE profiles(id INTEGER PRIMARY KEY,settings TEXT);
         CREATE TABLE history(id INTEGER PRIMARY KEY,at TEXT,event TEXT,recording_key TEXT,details TEXT);
         CREATE TABLE queue(id TEXT PRIMARY KEY,recording_key TEXT,download_id TEXT UNIQUE,state TEXT,provider TEXT,details TEXT,created TEXT,media_kind TEXT DEFAULT 'Audio');
+        CREATE TABLE media_assets(recording_key TEXT,media_kind TEXT,wanted INTEGER DEFAULT 1,state TEXT DEFAULT 'wanted',saved_path TEXT,source_url TEXT,provider_id TEXT,attempts INTEGER DEFAULT 0,retry_after INTEGER DEFAULT 0,error TEXT,acquired INTEGER,details TEXT DEFAULT '{}',PRIMARY KEY(recording_key,media_kind));
         CREATE TABLE blocklist(id INTEGER PRIMARY KEY,recording_key TEXT,download_id TEXT,reason TEXT,created TEXT);''')
         self.db.executemany('INSERT INTO settings VALUES(?,?)',[('mode','production'),('root',str(self.library)),('naming','{Creator}/Singles/{Title} [{SourceId}].{ext}')])
         self.db.execute("INSERT INTO creators VALUES(1,'Creator',1,1)")
@@ -110,10 +111,44 @@ class AcquisitionTests(unittest.TestCase):
             def post(self,*args,**kwargs):return Response(text='Ok.')
         with patch.object(b,'qbit',return_value=(Session(),'http://fixture',{})):
             result=b.grab(self.db,self.key,{'guid':'video-fixture','indexerId':7},'Video')
+            duplicate=b.grab(self.db,self.key,{'guid':'video-fixture','indexerId':7},'Video')
         self.assertEqual((result['status'],result['key'],result['mediaKind']),
+                         ('downloading',self.key,'Video'))
+        self.assertEqual((duplicate['status'],duplicate['key'],duplicate['mediaKind']),
                          ('downloading',self.key,'Video'))
         self.assertEqual(dict(self.db.execute('SELECT media_kind,count(*) FROM queue GROUP BY media_kind')),
                          {'Audio':1,'Video':1})
+        self.assertEqual(tuple(self.db.execute("SELECT state,wanted FROM media_assets WHERE media_kind='Video'").fetchone()),
+                         ('downloading',1))
+
+    def test_failed_video_torrent_import_updates_independent_asset_state(self):
+        folder=self.downloads/'ambiguous';folder.mkdir()
+        (folder/'first.mp4').write_bytes(b'first');(folder/'second.mkv').write_bytes(b'second')
+        b.video_media.ensure_asset_rows(self.db,self.key,video_wanted=True)
+        self.db.execute("UPDATE media_assets SET state='downloading' WHERE recording_key=? AND media_kind='Video'",(self.key,))
+        self.db.execute("INSERT INTO queue VALUES('video',?,'hash','downloading','qbittorrent','{}','date','Video')",(self.key,))
+        class Session:
+            def get(self,*args,**kwargs):return Response([{'category':'asmarr','progress':1,'state':'uploading','content_path':str(folder)}])
+        with patch.object(b,'qbit',return_value=(Session(),'http://fixture',{})):
+            result=b.monitor_downloads(self.db,self.cfg)
+        self.assertEqual((result['jobs'][0]['status'],result['jobs'][0]['key'],result['jobs'][0]['mediaKind']),
+                         ('failed',self.key,'Video'))
+        state=self.db.execute("SELECT state,wanted,attempts,retry_after,error FROM media_assets WHERE media_kind='Video'").fetchone()
+        self.assertEqual(state[:3],('failed',1,1));self.assertGreater(state[3],0)
+        self.assertEqual(state[4],'completed_torrent_media_ambiguous')
+
+    def test_terminal_video_torrent_import_is_unavailable_not_retrying(self):
+        source=self.downloads/'private.mp4';source.write_bytes(b'fixture')
+        b.video_media.ensure_asset_rows(self.db,self.key,video_wanted=True)
+        self.db.execute("UPDATE media_assets SET state='downloading' WHERE recording_key=? AND media_kind='Video'",(self.key,))
+        self.db.execute("INSERT INTO queue VALUES('video',?,'hash','downloading','qbittorrent','{}','date','Video')",(self.key,))
+        class Session:
+            def get(self,*args,**kwargs):return Response([{'category':'asmarr','progress':1,'state':'uploading','content_path':str(source)}])
+        with patch.object(b,'qbit',return_value=(Session(),'http://fixture',{})),patch.object(b.video_media,'import_video',side_effect=b.video_media.VideoUnavailable('video_source_unavailable')):
+            result=b.monitor_downloads(self.db,self.cfg)
+        self.assertEqual(result['jobs'][0]['status'],'unavailable')
+        self.assertEqual(tuple(self.db.execute("SELECT state,wanted,retry_after,error FROM media_assets WHERE media_kind='Video'").fetchone()),
+                         ('unavailable',1,0,'video_source_unavailable'))
     def test_qbittorrent_removal_happens_after_verified_import(self):
         source=self.audio();self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date','Audio')",(self.key,))
         test=self

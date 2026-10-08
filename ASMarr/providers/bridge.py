@@ -490,7 +490,15 @@ def grab(db,key,candidate,media_kind='Audio'):
     if db.execute('SELECT 1 FROM blocklist WHERE recording_key=? AND (download_id=? OR download_id IS NULL)',(key,resolved.get('guid'))).fetchone():raise ValueError('candidate_blocklisted')
     existing=db.execute("""SELECT * FROM queue WHERE recording_key=? AND media_kind=?
                            AND state NOT IN ('removed','failed')""",(key,media_kind)).fetchone()
-    if existing:return dict(existing)
+    if existing:
+        if media_kind=='Video' and has_table(db,'media_assets') and existing['state'] in {'submitting','downloading','importing'}:
+            video_media.ensure_asset_rows(db,key,video_wanted=True)
+            with db:
+                db.execute("""UPDATE media_assets SET state='downloading',wanted=1,error=NULL
+                              WHERE recording_key=? AND media_kind='Video'""",(key,))
+        status='downloading' if existing['state'] in {'submitting','downloading','importing'} else existing['state']
+        return {'status':status,'downloadId':existing['download_id'],'id':existing['id'],
+                'key':key,'mediaKind':media_kind}
     magnet=resolved.get('magnetUrl') or resolved.get('downloadUrl','')
     payload=None
     if magnet.startswith('magnet:'):
@@ -520,7 +528,12 @@ def grab(db,key,candidate,media_kind='Audio'):
         if payload is None:data['urls']=magnet
         r=s.post(base+'/api/v2/torrents/add',data=data,files={'torrents':('recording.torrent',payload,'application/x-bittorrent')} if payload else None,timeout=60)
         if r.status_code!=200 or r.text.strip()!='Ok.':raise ValueError('qbittorrent_submission_unconfirmed')
-    with db:db.execute("UPDATE queue SET state='downloading' WHERE id=?",(queue_id,))
+    with db:
+        db.execute("UPDATE queue SET state='downloading' WHERE id=?",(queue_id,))
+        if media_kind=='Video' and has_table(db,'media_assets'):
+            video_media.ensure_asset_rows(db,key,video_wanted=True)
+            db.execute("""UPDATE media_assets SET state='downloading',wanted=1,error=NULL
+                          WHERE recording_key=? AND media_kind='Video'""",(key,))
     event(db,'grab',key,{'downloadId':download_id,'provider':'qbittorrent','mediaKind':media_kind})
     return {'status':'downloading','downloadId':download_id,'id':queue_id,
             'key':key,'mediaKind':media_kind}
@@ -620,9 +633,25 @@ def monitor_downloads(db,cfg):
                 response=s.post(base+'/api/v2/torrents/delete',data={'hashes':job['download_id'],'deleteFiles':'false'},timeout=30);response.raise_for_status()
                 with db:db.execute("UPDATE queue SET state='removed' WHERE id=?",(job['id'],))
             results.append(dict(result,**identity))
+        except video_media.VideoUnavailable as e:
+            reason=str(e)
+            with db:
+                db.execute("UPDATE queue SET state='failed',details=? WHERE id=?",(json.dumps({'error':reason}),job['id']))
+                if media_kind=='Video' and has_table(db,'media_assets'):
+                    db.execute("""UPDATE media_assets SET state='unavailable',wanted=1,
+                                  retry_after=0,error=? WHERE recording_key=? AND media_kind='Video'""",
+                               (reason,job['recording_key']))
+            results.append(dict(identity,status='unavailable',reason=reason))
         except (ValueError,OSError) as e:
-            with db:db.execute("UPDATE queue SET state='failed',details=? WHERE id=?",(json.dumps({'error':str(e)}),job['id']))
-            results.append(dict(identity,status='failed',reason=str(e)))
+            reason=str(e);retry=int(time.time())+300
+            with db:
+                db.execute("UPDATE queue SET state='failed',details=? WHERE id=?",(json.dumps({'error':reason}),job['id']))
+                if media_kind=='Video' and has_table(db,'media_assets'):
+                    db.execute("""UPDATE media_assets SET state='failed',wanted=1,
+                                  attempts=attempts+1,retry_after=?,error=?
+                                  WHERE recording_key=? AND media_kind='Video'""",
+                               (retry,reason,job['recording_key']))
+            results.append(dict(identity,status='failed',reason=reason))
     return {'status':'ok','jobs':results}
 
 
