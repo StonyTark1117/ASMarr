@@ -51,6 +51,17 @@ def has_table(db,name):
     return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(name,)).fetchone() is not None
 
 
+def deployed_release_identity():
+    path=STATE/'acceptance'/'deployed-release.json'
+    try:
+        value=json.loads(path.read_text())
+    except (OSError,ValueError,json.JSONDecodeError):
+        return {'sourceCommit':None,'artifactSha256':None}
+    source=value.get('sourceCommit');artifact=value.get('artifactSha256')
+    return {'sourceCommit':source if isinstance(source,str) and re.fullmatch(r'[a-f0-9]{40}',source) else None,
+            'artifactSha256':artifact if isinstance(artifact,str) and re.fullmatch(r'[a-f0-9]{64}',artifact) else None}
+
+
 def configuration(db):
     cfg = source_configuration.apply(db, yaml.safe_load((CONFIG / 'sources.yaml').read_text()))
     cfg.update(state_db=str(DB), output_root=setting(db, 'root', '/mnt/cephfs/media/asmr'),
@@ -311,7 +322,7 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
         compare_fields=['name','status','parsed','pages','accepted','items','rejected','backlog_pending']
         simplified=lambda rs:[{k:r.get(k) for k in compare_fields} for r in rs]
         reference_checkpoints={r['key']:r['value'] for r in reference.execute('SELECT * FROM meta') if ('checkpoint' in r['key'] or '_seen:' in r['key']) and original_meta.get(r['key'])!=r['value']}
-        comparison={'legacyImplementationSha256':digest(legacy_path),'discoveryParity':sorted(proposed,key=lambda r:r['key'])==sorted(reference_proposed,key=lambda r:r['key']),
+        comparison={**deployed_release_identity(),'legacyImplementationSha256':digest(legacy_path),'discoveryParity':sorted(proposed,key=lambda r:r['key'])==sorted(reference_proposed,key=lambda r:r['key']),
                     'eligibilityAndSourceParity':simplified(reports)==simplified(reference_reports),
                     'checkpointCalculationParity':checkpoint_changes==reference_checkpoints,
                     'productionCheckpointsUnchanged':production_fingerprint()==production_before,

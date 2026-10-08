@@ -38,7 +38,7 @@ class CutoverSafetyTests(unittest.TestCase):
         cutover.APPLICATION.mkdir();(cutover.APPLICATION/'ASMarr.dll').write_bytes(b'tested application')
         digest=artifact_hash(cutover.APPLICATION)
         evidence.update(testedCommit='a'*40,artifactSha256=digest)
-        (cutover.ACCEPTANCE/'deployed-release.json').write_text(json.dumps({'sourceCommit':'a'*40,'artifactSha256':digest}))
+        (cutover.ACCEPTANCE/'deployed-release.json').write_text(json.dumps({'sourceCommit':'a'*40,'artifactSha256':digest,'deployedAt':'2026-10-07T00:00:00+00:00'}))
         (cutover.ACCEPTANCE/'pre-cutover.json').write_text(json.dumps(evidence))
 
     def tearDown(self):
@@ -47,7 +47,9 @@ class CutoverSafetyTests(unittest.TestCase):
 
     def cycle(self, stamp, **overrides):
         comparison = dict.fromkeys(cutover.PARITY_FIELDS, True)
-        comparison['legacyImplementationSha256'] = 'a'*64
+        deployment=json.loads((cutover.ACCEPTANCE/'deployed-release.json').read_text())
+        comparison.update(legacyImplementationSha256='a'*64,sourceCommit=deployment['sourceCommit'],
+                          artifactSha256=deployment['artifactSha256'])
         comparison.update(overrides)
         with sqlite3.connect(cutover.DB) as db:
             db.execute('INSERT INTO shadow_cycles VALUES(?,?,1)', (stamp,json.dumps(comparison)))
@@ -59,6 +61,31 @@ class CutoverSafetyTests(unittest.TestCase):
     def test_three_same_day_runs_do_not_satisfy_daily_gate(self):
         for hour in (8,9,10): self.cycle(f'2026-10-10T{hour:02d}:00:00Z')
         self.assertFalse(cutover.preflight(self.now)['ready'])
+
+    def test_prior_release_cycles_never_approve_current_release(self):
+        for day in (8,9,10):self.cycle(f'2026-10-{day:02d}T11:00:00Z',sourceCommit='b'*40)
+        report=cutover.preflight(self.now)
+        self.assertEqual([],report['qualifiedDays']);self.assertFalse(report['ready'])
+
+    def test_cycles_before_current_deployment_never_qualify(self):
+        manifest=cutover.ACCEPTANCE/'deployed-release.json';deployment=json.loads(manifest.read_text())
+        deployment['deployedAt']='2026-10-10T11:30:00+00:00';manifest.write_text(json.dumps(deployment))
+        for day in (8,9,10):self.cycle(f'2026-10-{day:02d}T11:00:00Z')
+        report=cutover.preflight(self.now)
+        self.assertEqual([],report['qualifiedDays']);self.assertFalse(report['ready'])
+
+    def test_malformed_cycle_evidence_is_ignored(self):
+        with sqlite3.connect(cutover.DB) as db:
+            db.execute('INSERT INTO shadow_cycles VALUES(?,?,1)', ('not-a-timestamp','not-json'))
+        report=cutover.preflight(self.now)
+        self.assertEqual([],report['qualifiedDays']);self.assertFalse(report['ready'])
+
+    def test_invalid_release_identity_never_qualifies_cycles(self):
+        manifest=cutover.ACCEPTANCE/'deployed-release.json';deployment=json.loads(manifest.read_text())
+        deployment['sourceCommit']='';deployment['artifactSha256']='';manifest.write_text(json.dumps(deployment))
+        for day in (8,9,10):self.cycle(f'2026-10-{day:02d}T11:00:00Z')
+        report=cutover.preflight(self.now)
+        self.assertEqual([],report['qualifiedDays']);self.assertFalse(report['ready'])
 
     def test_clean_flag_cannot_override_failed_parity(self):
         for day in (8,9,10): self.cycle(f'2026-10-{day:02d}T11:00:00Z',mediaUnchanged=False)

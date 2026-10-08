@@ -153,6 +153,11 @@ restores the saved task enablement states with future run times. It rechecks aft
 stopping the worker, records exclusive approval, and restarts the service even
 when that recheck fails. Live health must still be verified after restart.
 
+Every qualifying shadow cycle records the deployed source commit and whole-tree
+artifact hash. Cutover counts only cycles produced by the current exact release
+at or after its protected deployment timestamp; observations from an older
+binary can never approve a newer one.
+
 Shadow updates use `ops/shadow_deploy.py --payload <published-archive> --commit
 <full-source-sha> --ci-run <run-id> --artifact-sha256 <published-tree-sha256>
 --ops-commit <full-tooling-sha>`. It verifies the exact successful GitHub run,

@@ -42,6 +42,14 @@ class AcquisitionTests(unittest.TestCase):
         path=path or self.downloads/'audio.m4a'
         subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=220:duration=1','-c:a','aac','-y',str(path)],check=True)
         return path
+    def test_shadow_cycle_release_identity_comes_from_protected_deployment(self):
+        acceptance=self.root/'acceptance';acceptance.mkdir()
+        (acceptance/'deployed-release.json').write_text(json.dumps({'sourceCommit':'a'*40,'artifactSha256':'b'*64}))
+        with patch.object(b,'STATE',self.root):
+            self.assertEqual(b.deployed_release_identity(),{'sourceCommit':'a'*40,'artifactSha256':'b'*64})
+        (acceptance/'deployed-release.json').write_text('{invalid')
+        with patch.object(b,'STATE',self.root):
+            self.assertEqual(b.deployed_release_identity(),{'sourceCommit':None,'artifactSha256':None})
     def test_completed_import_is_verified_and_idempotent(self):
         source=self.audio();checksum=b.digest(source)
         with patch.object(s,'require_mount'):

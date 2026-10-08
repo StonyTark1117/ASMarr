@@ -37,10 +37,27 @@ def run_command(name, deadline):
 def preflight(now=None):
     now=now or dt.datetime.now(dt.timezone.utc)
     with sqlite3.connect(DB.as_uri()+'?mode=ro',uri=True) as db:
+        manifest_path=ACCEPTANCE/'deployed-release.json'
+        deployment=json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        source=deployment.get('sourceCommit','')
+        expected=deployment.get('artifactSha256','')
+        release_identity_valid=bool(re.fullmatch(r'[a-f0-9]{40}',source) and re.fullmatch(r'[a-f0-9]{64}',expected))
+        try:
+            deployed_at=dt.datetime.fromisoformat(deployment.get('deployedAt','').replace('Z','+00:00'))
+            if deployed_at.tzinfo is None:deployed_at=deployed_at.replace(tzinfo=dt.timezone.utc)
+        except (AttributeError,TypeError,ValueError):
+            deployed_at=None
         daily={}
         for started,comparison in db.execute('SELECT started,comparison FROM shadow_cycles WHERE clean=1 ORDER BY started'):
-            comparison=json.loads(comparison)
-            if comparison.get('legacyImplementationSha256') and all(comparison.get(k) is True for k in PARITY_FIELDS):
+            try:
+                comparison=json.loads(comparison)
+                observed=dt.datetime.fromisoformat(started.replace('Z','+00:00'))
+                if observed.tzinfo is None:observed=observed.replace(tzinfo=dt.timezone.utc)
+            except (AttributeError,TypeError,ValueError,json.JSONDecodeError):
+                continue
+            if (release_identity_valid and deployed_at is not None and observed>=deployed_at and
+                    comparison.get('sourceCommit')==source and comparison.get('artifactSha256')==expected and
+                    comparison.get('legacyImplementationSha256') and all(comparison.get(k) is True for k in PARITY_FIELDS)):
                 daily[started[:10]]=started
         stamps=[dt.datetime.fromisoformat(s.replace('Z','+00:00')) for s in daily.values()]
         three_days=len(stamps)>=3 and (stamps[-1]-stamps[-3]).total_seconds()>=46*3600 and 0<=(now-stamps[-1]).total_seconds()<30*3600
@@ -48,12 +65,8 @@ def preflight(now=None):
         evidence_path=ACCEPTANCE/'pre-cutover.json'
         evidence=json.loads(evidence_path.read_text()) if evidence_path.exists() else {}
         tests_passed=all(evidence.get(k) is True for k in ['providerFixtures','sqliteIntegration','browserAcceptance','playlistRecovery'])
-        manifest_path=ACCEPTANCE/'deployed-release.json'
-        deployment=json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
-        source=deployment.get('sourceCommit','')
-        expected=deployment.get('artifactSha256','')
         release_matches=False
-        if re.fullmatch(r'[a-f0-9]{40}',source) and re.fullmatch(r'[a-f0-9]{64}',expected):
+        if release_identity_valid:
             from release_integrity import artifact_hash
             release_matches=evidence.get('testedCommit')==source and evidence.get('artifactSha256')==expected and artifact_hash(APPLICATION)==expected
         mode=db.execute("SELECT value FROM settings WHERE key='mode'").fetchone()
