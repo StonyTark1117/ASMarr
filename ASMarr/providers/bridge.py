@@ -522,7 +522,8 @@ def grab(db,key,candidate,media_kind='Audio'):
         if r.status_code!=200 or r.text.strip()!='Ok.':raise ValueError('qbittorrent_submission_unconfirmed')
     with db:db.execute("UPDATE queue SET state='downloading' WHERE id=?",(queue_id,))
     event(db,'grab',key,{'downloadId':download_id,'provider':'qbittorrent','mediaKind':media_kind})
-    return {'status':'downloading','downloadId':download_id,'id':queue_id}
+    return {'status':'downloading','downloadId':download_id,'id':queue_id,
+            'key':key,'mediaKind':media_kind}
 
 
 def digest(path):
@@ -596,13 +597,14 @@ def monitor_downloads(db,cfg):
     s,base,opts=qbit();results=[]
     for job in jobs:
         r=s.get(base+'/api/v2/torrents/info',params={'hashes':job['download_id']},timeout=30);r.raise_for_status();info=r.json()
-        if not info:results.append({'id':job['id'],'status':'job_missing'});continue
+        media_kind=job['media_kind'] if 'media_kind' in job.keys() else 'Audio'
+        identity={'id':job['id'],'key':job['recording_key'],'mediaKind':media_kind}
+        if not info:results.append(dict(identity,status='job_missing'));continue
         info=info[0]
-        if info.get('category')!='asmarr':results.append({'id':job['id'],'status':'category_mismatch'});continue
-        if info.get('progress',0)<1 or info.get('state') in {'checkingDL','checkingUP','moving','checkingResumeData'}:results.append({'id':job['id'],'status':info.get('state'),'progress':info.get('progress')});continue
+        if info.get('category')!='asmarr':results.append(dict(identity,status='category_mismatch'));continue
+        if info.get('progress',0)<1 or info.get('state') in {'checkingDL','checkingUP','moving','checkingResumeData'}:results.append(dict(identity,status=info.get('state'),progress=info.get('progress')));continue
         try:
             path=Path(info.get('content_path') or info.get('save_path',''))
-            media_kind=job['media_kind'] if 'media_kind' in job.keys() else 'Audio'
             extensions=video_media.VIDEO_EXTENSIONS if media_kind=='Video' else ALLOWED
             candidates=[path] if path.is_file() and path.suffix.lower() in extensions else [p for p in path.rglob('*') if p.is_file() and p.suffix.lower() in extensions]
             if len(candidates)!=1:raise ValueError('completed_torrent_media_ambiguous')
@@ -617,10 +619,10 @@ def monitor_downloads(db,cfg):
             if opts.get('retention','keep')=='remove-torrent':
                 response=s.post(base+'/api/v2/torrents/delete',data={'hashes':job['download_id'],'deleteFiles':'false'},timeout=30);response.raise_for_status()
                 with db:db.execute("UPDATE queue SET state='removed' WHERE id=?",(job['id'],))
-            results.append(dict(result,id=job['id']))
+            results.append(dict(result,**identity))
         except (ValueError,OSError) as e:
             with db:db.execute("UPDATE queue SET state='failed',details=? WHERE id=?",(json.dumps({'error':str(e)}),job['id']))
-            results.append({'id':job['id'],'status':'failed','reason':str(e)})
+            results.append(dict(identity,status='failed',reason=str(e)))
     return {'status':'ok','jobs':results}
 
 

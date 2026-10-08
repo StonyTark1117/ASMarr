@@ -241,8 +241,46 @@ test("wanted recording details and interactive search submission", async ({
       return (await detail.json()).media.find(
         (m: any) => m.media_kind === "Video",
       )?.state;
-    })
+    }, { timeout: 10000 })
     .toBe("wanted");
+});
+test("per-asset SignalR events refresh video lifecycle state", async ({
+  page,
+  request,
+}) => {
+  const headers = { "X-Api-Key": auth().apiKey };
+  await login(page);
+  await expect(page.getByLabel("Live updates connected")).toBeVisible({
+    timeout: 10000,
+  });
+  await page.getByRole("button", { name: "Videos", exact: true }).click();
+  await expect(
+    page.getByText("A quiet bedtime recording", { exact: true }),
+  ).toBeVisible();
+  const suppressed = await request.post("/api/v1/recordings/action", {
+    headers,
+    data: {
+      key: "fixture:bedtime",
+      action: "suppress",
+      mediaKind: "Video",
+    },
+  });
+  expect(suppressed.ok()).toBe(true);
+  await expect(
+    page.getByText("A quiet bedtime recording", { exact: true }),
+  ).not.toBeVisible({ timeout: 5000 });
+  const retried = await request.post("/api/v1/recordings/action", {
+    headers,
+    data: {
+      key: "fixture:bedtime",
+      action: "retry",
+      mediaKind: "Video",
+    },
+  });
+  expect(retried.ok()).toBe(true);
+  await expect(
+    page.getByText("A quiet bedtime recording", { exact: true }),
+  ).toBeVisible({ timeout: 5000 });
 });
 test("video workspace exposes manual-only interactive search and grab", async ({
   page,

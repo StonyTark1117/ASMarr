@@ -93,8 +93,19 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             if(name=="video-queue"&&result is JsonElement videoResult&&videoResult.TryGetProperty("jobs",out var videoJobs))
                 foreach(var job in videoJobs.EnumerateArray())
                     await hub.Clients.All.SendAsync("assetState",new {mediaKind="Video",command=id,
-                        recordingKey=job.TryGetProperty("key",out var key)?key.GetString():null,
-                        state=job.TryGetProperty("status",out var state)?state.GetString():"updated"},ct);
+                        recordingKey=job.TryGetProperty("key",out var videoKey)?videoKey.GetString():null,
+                        state=job.TryGetProperty("status",out var videoState)?videoState.GetString():"updated"},ct);
+            if(name=="queue"&&result is JsonElement mediaQueueResult&&mediaQueueResult.TryGetProperty("downloads",out var downloads)&&
+               downloads.TryGetProperty("jobs",out var downloadJobs))
+                foreach(var job in downloadJobs.EnumerateArray())
+                    if(job.TryGetProperty("mediaKind",out var mediaKind))
+                        await hub.Clients.All.SendAsync("assetState",new {mediaKind=mediaKind.GetString(),command=id,
+                            recordingKey=job.TryGetProperty("key",out var downloadKey)?downloadKey.GetString():null,
+                            state=job.TryGetProperty("status",out var downloadState)?downloadState.GetString():"updated"},ct);
+            if(name=="grab"&&result is JsonElement grabResult&&grabResult.TryGetProperty("mediaKind",out var grabbedKind))
+                await hub.Clients.All.SendAsync("assetState",new {mediaKind=grabbedKind.GetString(),command=id,
+                    recordingKey=grabResult.TryGetProperty("key",out var grabbedKey)?grabbedKey.GetString():null,
+                    state=grabResult.TryGetProperty("status",out var grabbedState)?grabbedState.GetString():"updated"},ct);
             if(name=="queue"&&!shadow&&result is JsonElement queueResult&&queueResult.TryGetProperty("saved",out var saved)&&saved.GetArrayLength()>0)
             {
                 try{await notifications.Notify($"ASMarr imported {saved.GetArrayLength()} recordings.",ct);}catch(Exception){store.Log("warning","Import succeeded; notification delivery failed");}
@@ -116,6 +127,20 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
     async Task<JsonElement> RunVideoBackfill(JsonElement arguments,string commandId,CancellationToken ct)
     {
         int creatorId=arguments.GetProperty("creatorId").GetInt32();
+        Dictionary<string,string?> observed=store.Query("SELECT m.recording_key,m.state FROM media_assets m JOIN assets a ON a.key=m.recording_key WHERE m.media_kind='Video' AND a.creator=(SELECT name FROM creators WHERE id=$creator)",("creator",creatorId))
+            .ToDictionary(row=>row["recording_key"]!.ToString()!,row=>row["state"]?.ToString());
+        async Task PublishAssetChanges()
+        {
+            foreach(var row in store.Query("SELECT m.recording_key,m.state FROM media_assets m JOIN assets a ON a.key=m.recording_key WHERE m.media_kind='Video' AND a.creator=(SELECT name FROM creators WHERE id=$creator)",("creator",creatorId)))
+            {
+                string key=row["recording_key"]!.ToString()!,state=row["state"]?.ToString()??"updated";
+                if(!observed.TryGetValue(key,out var previous)||previous!=state)
+                {
+                    observed[key]=state;
+                    await hub.Clients.All.SendAsync("assetState",new {mediaKind="Video",command=commandId,recordingKey=key,state},ct);
+                }
+            }
+        }
         var run=providers.Run("video-backfill",arguments,ct);string? previous=null;
         while(!run.IsCompleted)
         {
@@ -129,9 +154,11 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
                     await hub.Clients.All.SendAsync("backfillProgress",new {mediaKind="Video",command=commandId,creatorId,job},ct);
                 }
             }
+            await PublishAssetChanges();
             await Task.WhenAny(run,Task.Delay(500,ct));
         }
         var result=await run;
+        await PublishAssetChanges();
         await hub.Clients.All.SendAsync("backfillProgress",new {mediaKind="Video",command=commandId,creatorId,result},ct);
         return result;
     }

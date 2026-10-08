@@ -110,7 +110,8 @@ class AcquisitionTests(unittest.TestCase):
             def post(self,*args,**kwargs):return Response(text='Ok.')
         with patch.object(b,'qbit',return_value=(Session(),'http://fixture',{})):
             result=b.grab(self.db,self.key,{'guid':'video-fixture','indexerId':7},'Video')
-        self.assertEqual(result['status'],'downloading')
+        self.assertEqual((result['status'],result['key'],result['mediaKind']),
+                         ('downloading',self.key,'Video'))
         self.assertEqual(dict(self.db.execute('SELECT media_kind,count(*) FROM queue GROUP BY media_kind')),
                          {'Audio':1,'Video':1})
     def test_qbittorrent_removal_happens_after_verified_import(self):
@@ -123,7 +124,8 @@ class AcquisitionTests(unittest.TestCase):
                 test.assertEqual(kwargs['data']['deleteFiles'],'false');return Response()
         with patch.object(s,'require_mount'),patch.object(b,'qbit',return_value=(Session(),'http://fixture',{'retention':'remove-torrent'})):
             result=b.monitor_downloads(self.db,self.cfg)
-        self.assertEqual(result['jobs'][0]['status'],'complete');self.assertEqual(self.db.execute('SELECT state FROM queue').fetchone()[0],'removed');self.assertTrue(source.exists())
+        self.assertEqual((result['jobs'][0]['status'],result['jobs'][0]['key'],result['jobs'][0]['mediaKind']),
+                         ('complete',self.key,'Audio'));self.assertEqual(self.db.execute('SELECT state FROM queue').fetchone()[0],'removed');self.assertTrue(source.exists())
     def test_external_client_category_is_never_imported(self):
         self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date','Audio')",(self.key,))
         class Session:
