@@ -49,11 +49,15 @@ Assert(store.Query("SELECT * FROM identities WHERE creator_id=$id",("id",registr
 var created=store.Query("SELECT * FROM creators WHERE id=$id",("id",registration.Id))[0];
 Assert(Convert.ToInt32(created["monitor_video"])==0,"creator onboarding never opts into video");
 Assert(!Directory.Exists(created["path"]!.ToString()),"creator onboarding does not write media directories");
+var visual=CreatorRegistration.Create(store,new NewCreator("Visual Creator",2,MonitorVideo:true,VideoQualityProfileId:4));
+var visualRow=store.Query("SELECT monitor_video,video_quality_profile_id FROM creators WHERE id=$id",("id",visual.Id))[0];
+Assert(Convert.ToInt32(visualRow["monitor_video"])==1&&Convert.ToInt32(visualRow["video_quality_profile_id"])==4,"creator onboarding persists explicit video monitoring and profile selection");
+Assert(CreatorRegistration.Create(store,new NewCreator("Invalid video profile",2,MonitorVideo:true,VideoQualityProfileId:999)).Error is not null,"creator onboarding validates video quality profile");
 Assert(CreatorRegistration.Create(store,new NewCreator("new creator",2)).Error is not null,"case-insensitive duplicate creator is rejected");
 Assert(CreatorRegistration.Create(store,new NewCreator("../Escape",2)).Error is not null,"creator path traversal is rejected");
 Assert(CreatorRegistration.Create(store,new NewCreator("Invalid profile",999)).Error is not null,"onboarding validates acquisition profile");
 Assert(CreatorRegistration.Create(store,new NewCreator("Conflicting Creator",2,Identities:[new("reddit","handle")])).Error is not null,"an identity cannot be owned by another creator");
-Assert(store.Query("SELECT * FROM creators").Count==3,"rejected onboarding leaves no partial creators");
+Assert(store.Query("SELECT * FROM creators").Count==4,"rejected onboarding leaves no partial creators");
 Assert(CreatorRegistration.Link(store,999,new("reddit","Unowned")).Error is not null,"linking validates creator ownership");
 Assert(CreatorRegistration.Link(store,1,new("soundgasm","handle")).Error is not null,"linking cannot claim another creator identity");
 Assert(CreatorRegistration.Link(store,1,new("soundgasm",null!)).Error is not null,"null source handles are rejected safely");

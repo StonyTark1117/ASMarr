@@ -154,6 +154,12 @@ test("creator monitoring, identity detail and mass editing", async ({
     videoTabs.getByRole("button", { name: "History", exact: true }),
   ).toBeVisible();
   await expect(
+    videoTabs.getByRole("button", {
+      name: "Interactive Search",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
     page.getByText("Visual copies are tracked independently from audio."),
   ).toBeVisible();
 });
@@ -214,6 +220,68 @@ test("wanted recording details and interactive search submission", async ({
       )?.state;
     })
     .toBe("wanted");
+});
+test("video workspace exposes manual-only interactive search and grab", async ({
+  page,
+}) => {
+  let grabbed: any = null;
+  await page.route("**/api/v1/system/status", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, mode: "production" } });
+  });
+  await page.route("**/api/v1/commands", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const body = route.request().postDataJSON();
+    if (body.name === "search")
+      return route.fulfill({ json: { id: "fixture-video-search" } });
+    if (body.name === "grab") {
+      grabbed = body;
+      return route.fulfill({ json: { id: "fixture-video-grab" } });
+    }
+    return route.continue();
+  });
+  await page.route("**/api/v1/commands/fixture-video-search", (route) =>
+    route.fulfill({
+      json: {
+        id: "fixture-video-search",
+        state: "completed",
+        result: JSON.stringify({
+          status: "ok",
+          candidates: [
+            {
+              guid: "manual-video-result",
+              title: "Quiet Creator Bedtime 1080p",
+              indexer: "Fixture Indexer",
+              resolution: 1080,
+              interactiveOnly: true,
+              autoGrab: false,
+            },
+          ],
+        }),
+      },
+    }),
+  );
+  await login(page);
+  await page.getByRole("button", { name: "Videos", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Interactive Search", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Interactive video search" }),
+  ).toBeVisible();
+  await page.getByText("A quiet bedtime recording", { exact: true }).click();
+  await page.getByRole("button", { name: "Search video", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Video search results" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Prowlarr video releases are manual-only"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Grab", exact: true }).click();
+  await expect.poll(() => grabbed?.arguments?.mediaKind).toBe("Video");
+  expect(grabbed.arguments.candidate.guid).toBe("manual-video-result");
+  expect(grabbed.arguments.candidate.autoGrab).toBe(false);
 });
 test("settings source toggle and task execution", async ({ page, request }) => {
   await login(page);
@@ -503,4 +571,40 @@ test("manual creator onboarding preserves audio-only defaults", async ({
   expect(
     (await (await request.get("/api/v1/creators", { headers })).json()).length,
   ).toBe(rows.length);
+  await page.getByRole("button", { name: "Add creator", exact: true }).click();
+  await page.getByLabel("New creator name").fill("Visual Sleep Creator");
+  await page
+    .getByLabel("New creator source", { exact: true })
+    .selectOption("youtube");
+  await page.getByLabel("New creator source handle").fill("VisualChannel");
+  await page.getByLabel("Monitor new creator videos").check();
+  await page.getByLabel("New creator video quality profile").selectOption("4");
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Currently known candidates: 0");
+    await dialog.accept();
+  });
+  await page
+    .getByRole("button", { name: "Create creator", exact: true })
+    .click();
+  await expect
+    .poll(async () => {
+      const creators = await request.get("/api/v1/creators", { headers });
+      return (await creators.json()).find(
+        (creator: any) => creator.name === "Visual Sleep Creator",
+      );
+    })
+    .toMatchObject({ monitor_video: 1, video_quality_profile_id: 4 });
+  const visual = (
+    await (await request.get("/api/v1/creators", { headers })).json()
+  ).find((creator: any) => creator.name === "Visual Sleep Creator");
+  await expect
+    .poll(async () => {
+      const commands = await request.get("/api/v1/commands", { headers });
+      return (await commands.json()).some(
+        (command: any) =>
+          command.name === "video-backfill" &&
+          JSON.parse(command.arguments).creatorId === visual.id,
+      );
+    })
+    .toBe(true);
 });

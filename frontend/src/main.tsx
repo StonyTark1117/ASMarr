@@ -176,9 +176,11 @@ function App() {
         Videos:
           tab === "Queue"
             ? "video/queue"
-            : tab === "History" || tab === "Failed"
-              ? "video/history"
-              : "video/wanted",
+            : tab === "Interactive Search"
+              ? "recordings?limit=1000"
+              : tab === "History" || tab === "Failed"
+                ? "video/history"
+                : "video/wanted",
         Wanted: "wanted",
         Queue: "queue",
         History: "history",
@@ -1098,6 +1100,14 @@ function App() {
                           .map((x) => x.trim())
                           .filter(Boolean);
                       const handle = String(values.get("handle") || "").trim();
+                      const monitorVideo = values.get("monitorVideo") === "on";
+                      if (
+                        monitorVideo &&
+                        !window.confirm(
+                          "Enabling Monitor Videos queues the creator's complete known history. Currently known candidates: 0. Continue?",
+                        )
+                      )
+                        return;
                       if (
                         await act("creators", "POST", {
                           name: values.get("name"),
@@ -1105,6 +1115,10 @@ function App() {
                           aliases: split("aliases"),
                           tags: split("tags"),
                           monitored: values.get("monitored") === "on",
+                          monitorVideo,
+                          videoQualityProfileId: Number(
+                            values.get("videoProfile"),
+                          ),
                           identities: handle
                             ? [
                                 {
@@ -1185,15 +1199,38 @@ function App() {
                       />{" "}
                       Monitor audio
                     </label>
+                    <label>
+                      <input
+                        aria-label="Monitor new creator videos"
+                        name="monitorVideo"
+                        type="checkbox"
+                      />{" "}
+                      Monitor videos
+                    </label>
+                    <label>
+                      Video quality profile
+                      <select
+                        aria-label="New creator video quality profile"
+                        name="videoProfile"
+                        defaultValue="1"
+                      >
+                        {videoProfiles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <button className="primary" type="submit">
                       Create creator
                     </button>
                   </form>
                   <p className="muted">
                     The library path is derived from the configured root. This
-                    creates database records only; no directory, download, or
-                    video backfill is created. Link more identities from the
-                    creator detail page.
+                    creates database records only and no directory or download.
+                    Video monitoring is optional; enabling it authorizes a
+                    resumable complete-history scan. Link more identities from
+                    the creator detail page.
                   </p>
                 </section>
               )}
@@ -1396,7 +1433,13 @@ function App() {
           ) : page === "Videos" ? (
             <>
               <div className="tabs">
-                {["Wanted", "Queue", "History", "Failed"].map((t) => (
+                {[
+                  "Wanted",
+                  "Queue",
+                  "History",
+                  "Failed",
+                  "Interactive Search",
+                ].map((t) => (
                   <button
                     className={tab === t ? "active" : ""}
                     onClick={() => setTab(t)}
@@ -1474,6 +1517,27 @@ function App() {
                         ),
                       ),
                     )}
+                </>
+              )}
+              {tab === "Interactive Search" && (
+                <>
+                  <div className="toolbar">
+                    <div className="search">
+                      <Search size={17} />
+                      <input
+                        aria-label="Search recordings for video"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="Choose a recording to search…"
+                      />
+                    </div>
+                  </div>
+                  <h2>Interactive video search</h2>
+                  <p className="muted">
+                    Choose a recording, then search Prowlarr for manual-only
+                    video releases. Results are never grabbed automatically.
+                  </p>
+                  {Array.isArray(data) && recordingTable(data)}
                 </>
               )}
             </>

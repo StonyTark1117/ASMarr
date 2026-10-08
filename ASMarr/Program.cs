@@ -74,7 +74,9 @@ app.MapPost("/api/v1/auth/login",async(HttpContext context,Login input)=> {
 var api=app.MapGroup("/api/v1").RequireAuthorization();
 api.MapPost("/creators",(NewCreator creator)=> {
     var result=CreatorRegistration.Create(store,creator);
-    return result.Error is null?Results.Created("/api/v1/creators/"+result.Id,new{id=result.Id}):Results.BadRequest(new{error=result.Error});
+    if(result.Error is not null)return Results.BadRequest(new{error=result.Error});
+    string? commandId=creator.MonitorVideo?store.Enqueue("video-backfill",new{creatorId=result.Id}):null;
+    return Results.Created("/api/v1/creators/"+result.Id,new{id=result.Id,backfillCommandId=commandId});
 });
 api.MapGet("/auth",(HttpContext c)=>new {username=c.User.Identity!.Name});
 api.MapPost("/auth/logout",async(HttpContext c)=>{await c.SignOutAsync();return Results.NoContent();});
