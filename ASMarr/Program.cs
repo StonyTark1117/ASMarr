@@ -125,6 +125,11 @@ api.MapGet("/queue",(string? mediaKind)=>new {direct=store.Query("SELECT a.*,m.m
 api.MapGet("/video/queue",()=>new {direct=store.Query("SELECT a.*,m.state AS media_state FROM media_assets m JOIN assets a ON a.key=m.recording_key WHERE m.media_kind='Video' AND m.state IN ('wanted','queued','downloading','failed') ORDER BY m.retry_after"),downloads=store.Query("SELECT * FROM queue WHERE media_kind='Video' ORDER BY created DESC"),backfills=store.Query("SELECT * FROM backfill_jobs WHERE media_kind='Video' ORDER BY started DESC")});
 api.MapGet("/history",(string? mediaKind)=>new {events=store.Query("SELECT * FROM history WHERE $kind IS NULL OR json_extract(details,'$.mediaKind')=$kind ORDER BY id DESC LIMIT 200",("kind",mediaKind)),runs=store.Query("SELECT * FROM runs ORDER BY started DESC LIMIT 100"),imports=store.Query("SELECT m.*,a.title,a.creator FROM media_assets m JOIN assets a ON a.key=m.recording_key WHERE m.state='imported' AND ($kind IS NULL OR m.media_kind=$kind) ORDER BY m.acquired DESC LIMIT 200",("kind",mediaKind))});
 api.MapGet("/video/history",()=>new {assets=store.Query("SELECT a.*,m.* FROM media_assets m JOIN assets a ON a.key=m.recording_key WHERE m.media_kind='Video' AND m.state IN ('imported','failed','unavailable') ORDER BY m.acquired DESC"),backfills=store.Query("SELECT * FROM backfill_jobs WHERE media_kind='Video' ORDER BY started DESC")});
+api.MapPost("/video/interactive-search",(VideoInteractiveSearch search)=> {
+    if(string.IsNullOrWhiteSpace(search.Key))return Results.BadRequest(new{error="Recording key is required"});
+    if(store.Query("SELECT key FROM assets WHERE key=$key",("key",search.Key)).Count==0)return Results.NotFound();
+    return Results.Accepted(value:new{id=store.Enqueue("search",new{key=search.Key,mediaKind="Video"})});
+});
 api.MapGet("/calendar",()=>store.Query("SELECT key,title,creator,published,state FROM assets WHERE published>0 ORDER BY published DESC"));
 api.MapGet("/connectors",()=>new {sources=store.Query("SELECT * FROM sources ORDER BY name"),configuration=new[]{"reddit","soundgasm","youtube","sfw"}.Select(k=>new{kind=k,enabled=store.Setting("source."+k+".enabled","true")=="true"})});
 api.MapPut("/connectors/{kind}",(string kind,JsonElement j)=>{if(kind is not ("reddit" or "soundgasm" or "youtube" or "sfw"))return Results.BadRequest();store.Set("source."+kind+".enabled",j.GetProperty("enabled").GetBoolean()?"true":"false");return Results.Ok();});
@@ -157,8 +162,14 @@ api.MapGet("/video/plex-binding",()=> {
     }
     return new{sectionId};
 });
-api.MapPut("/video/plex-binding",async(VideoPlexBinding binding)=> {
+api.MapPut("/video/plex-binding",async(VideoPlexBinding binding,ProviderProcess provider,CancellationToken ct)=> {
     if(binding.SectionId is null or <1)return Results.BadRequest(new{error="Select a valid Plex Other Videos section"});
+    var validation=await provider.Run("plex-video-validate-binding",new{sectionId=binding.SectionId.Value},ct);
+    if(!validation.TryGetProperty("valid",out var valid)||valid.ValueKind!=JsonValueKind.True)
+    {
+        string error=validation.TryGetProperty("error",out var reason)?reason.GetString()??"Plex video library validation failed":"Plex video library validation failed";
+        return Results.BadRequest(new{error});
+    }
     string path=System.IO.Path.Combine(store.ConfigRoot,"integrations.json");
     var data=File.Exists(path)?JsonSerializer.Deserialize<Dictionary<string,JsonElement>>(await File.ReadAllTextAsync(path))!:new();
     var plex=data.TryGetValue("plex",out var existingPlex)&&existingPlex.ValueKind==JsonValueKind.Object
@@ -228,6 +239,7 @@ record IdentityEdit(int CreatorId,string Kind,string Handle,bool Enabled);
 record ProfileEdit(string Name,JsonElement Settings);
 record VideoProfileEdit(string Name,string Resolution,JsonElement Settings);
 record VideoPlexBinding(int? SectionId);
+record VideoInteractiveSearch(string Key);
 record RecordingAction(string Key,string Action,string? Reason,string? MediaKind);
 record CommandInput(string Name,JsonElement Arguments);
 record TaskEdit(bool Enabled,int IntervalSeconds);

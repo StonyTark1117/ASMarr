@@ -286,10 +286,15 @@ function App() {
   };
   const search = async (mediaKind = "Audio") => {
     if (!recording) return;
-    const c = await command("search", {
-      key: recording.recording.key,
-      mediaKind,
-    });
+    const c =
+      mediaKind === "Video"
+        ? await act("video/interactive-search", "POST", {
+            key: recording.recording.key,
+          })
+        : await command("search", {
+            key: recording.recording.key,
+            mediaKind,
+          });
     if (!c) return;
     notify("Searching configured indexers…");
     for (let i = 0; i < 45; i++) {

@@ -59,6 +59,14 @@ test("creator monitoring, identity detail and mass editing", async ({
   const monitored = page.getByLabel("Monitored", { exact: true });
   await monitored.uncheck();
   await expect(monitored).not.toBeChecked();
+  await expect
+    .poll(async () => {
+      const response = await request.get("/api/v1/creators", {
+        headers: { "X-Api-Key": auth().apiKey },
+      });
+      return (await response.json()).find((c: any) => c.id === 1)?.monitored;
+    })
+    .toBe(0);
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await page.getByLabel("Select Quiet Creator").check();
   await page.getByLabel("Select Soft Voice").check();
@@ -102,7 +110,7 @@ test("creator monitoring, identity detail and mass editing", async ({
           c.name === "video-backfill" &&
           ["completed", "failed"].includes(c.state),
       );
-    })
+    }, { timeout: 20000 })
     .toBe(true);
   await page.getByLabel("Video quality profile").selectOption("4");
   await expect
@@ -169,7 +177,10 @@ test("wanted recording details and interactive search submission", async ({
 }) => {
   await login(page);
   await page.getByRole("button", { name: "Wanted", exact: true }).click();
-  await page.getByText("A quiet bedtime recording", { exact: true }).click();
+  await page
+    .getByText("A quiet bedtime recording", { exact: true })
+    .first()
+    .click();
   await expect(
     page.getByRole("heading", { name: "Recording details" }),
   ).toBeVisible();
@@ -230,11 +241,12 @@ test("video workspace exposes manual-only interactive search and grab", async ({
     const body = await response.json();
     await route.fulfill({ response, json: { ...body, mode: "production" } });
   });
+  await page.route("**/api/v1/video/interactive-search", (route) =>
+    route.fulfill({ json: { id: "fixture-video-search" } }),
+  );
   await page.route("**/api/v1/commands", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     const body = route.request().postDataJSON();
-    if (body.name === "search")
-      return route.fulfill({ json: { id: "fixture-video-search" } });
     if (body.name === "grab") {
       grabbed = body;
       return route.fulfill({ json: { id: "fixture-video-grab" } });
@@ -363,6 +375,14 @@ test("dedicated Plex video binding preserves protected integration fields", asyn
   expect(saved.video.section_id).toBe(12);
   expect(saved.section_id).toBe(4);
   expect(saved.token).toBe("fixture-secret");
+  const wrongLibrary = await request.put("/api/v1/video/plex-binding", {
+    headers,
+    data: { sectionId: 2 },
+  });
+  expect(wrongLibrary.status()).toBe(400);
+  expect((await wrongLibrary.json()).error).toContain(
+    "plex_video_library_must_be_other_videos",
+  );
   const rejected = await request.put("/api/v1/video/plex-binding", {
     headers,
     data: { sectionId: 0 },

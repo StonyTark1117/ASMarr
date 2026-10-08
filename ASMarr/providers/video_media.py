@@ -624,6 +624,13 @@ def process_queue(db, cfg, audio_importer=None):
 
 def plex_library_validation(cfg, secrets):
     validate_roots(cfg['output_root'], cfg['video_root'])
+    video_root = Path(cfg['video_root']).resolve()
+    # This runs as the ASMarr service account, so the check proves that the
+    # configured library root can actually be traversed by the application.
+    # Shadow deployments deliberately keep media read-only; write access is
+    # granted only by the audited production cutover.
+    if not video_root.is_dir() or not os.access(video_root, os.R_OK | os.X_OK):
+        raise ValueError('plex_video_root_not_accessible')
     plex = cfg.get('plex', {})
     video = plex.get('video') or {}
     token = secrets.get('plex_token') or plex.get('token')
@@ -648,11 +655,15 @@ def plex_library_validation(cfg, secrets):
         locations = requests.get(plex['url'].rstrip('/') + f'/library/sections/{video["section_id"]}', headers={'X-Plex-Token': token}, timeout=(10,30))
         locations.raise_for_status()
         location_paths = [x.get('path') for x in et.fromstring(locations.text).findall('.//Location') if x.get('path')]
-    if not location_paths or not any(Path(cfg['video_root']).resolve().is_relative_to(Path(p).resolve()) for p in location_paths):
-        raise ValueError('plex_video_root_not_in_library')
-    if any(paths_overlap(cfg['output_root'], p) for p in location_paths):
+    resolved_locations = {Path(path).resolve() for path in location_paths}
+    if any(paths_overlap(cfg['output_root'], path) for path in location_paths):
         raise ValueError('plex_audio_and_video_libraries_overlap')
-    return {'status': 'healthy', 'sectionId': video['section_id'], 'title': section.get('title'), 'type': 'Other Videos'}
+    if video_root not in resolved_locations:
+        raise ValueError('plex_video_root_not_in_library')
+    if len(resolved_locations) != 1:
+        raise ValueError('plex_video_library_must_be_dedicated')
+    return {'status': 'healthy', 'sectionId': video['section_id'], 'title': section.get('title'),
+            'type': 'Other Videos', 'rootAccessible': True}
 
 
 def plex_refresh(db, cfg, secrets):

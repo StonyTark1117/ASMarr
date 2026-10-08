@@ -707,6 +707,20 @@ def dispatch(operation,args):
             return plex_playlists.sync(db,cfg,secrets,core,dry_run=preview)
         if operation=='plex': production(db); return {'status':core.plex_refresh(db,cfg,secrets,core.HTTP())}
         if operation=='plex-video': production(db); return video_media.plex_refresh(db,cfg,secrets)
+        if operation=='plex-video-validate-binding':
+            # Validate the proposed section against the effective configuration
+            # before the host persists it. This prevents a Movies, TV, Music,
+            # unreachable, inaccessible or overlapping library from ever
+            # becoming the active video binding.
+            proposed=dict(cfg)
+            plex=dict(cfg.get('plex', {}));video=dict(plex.get('video') or {})
+            video['section_id']=int(args['sectionId']);plex['video']=video;proposed['plex']=plex
+            try:
+                return dict(video_media.plex_library_validation(proposed,secrets), valid=True)
+            except (ValueError, requests.RequestException, ET.ParseError) as error:
+                reason=(str(error) if isinstance(error,ValueError)
+                        else 'plex_video_library_unreachable')
+                return {'valid':False,'error':reason}
         if operation=='plex-video-verify': return video_media.plex_library_validation(cfg,secrets)
         if operation=='plex-verify':
             client=plex_playlists.Client(cfg,secrets)

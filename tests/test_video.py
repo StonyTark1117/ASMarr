@@ -325,7 +325,14 @@ class VideoTests(unittest.TestCase):
             result = v.plex_library_validation(self.cfg, {'plex_token':'secret'})
         self.assertEqual(result['type'], 'Other Videos')
         self.assertEqual(result['sectionId'], 9)
+        self.assertTrue(result['rootAccessible'])
         get.assert_called_once()
+
+    def test_plex_rejects_an_inaccessible_video_root(self):
+        self.cfg['video_root'] = str(self.root / 'missing-video-root')
+        self.cfg['plex'] = {'url':'http://plex:32400','video':{'section_id':9}}
+        with self.assertRaisesRegex(ValueError, 'root_not_accessible'):
+            v.plex_library_validation(self.cfg, {'plex_token':'secret'})
 
     def test_plex_rejects_movie_tv_audio_and_overlapping_bindings(self):
         self.cfg['plex'] = {'url':'http://plex:32400','video':{'section_id':9}}
@@ -346,6 +353,14 @@ class VideoTests(unittest.TestCase):
                          f'<Location path="{common_parent}"/></Directory></MediaContainer>')
         with patch.object(v.requests, 'get', return_value=self.plex_response(valid_section)):
             with self.assertRaisesRegex(ValueError, 'libraries_overlap'):
+                v.plex_library_validation(self.cfg, {'plex_token':'secret'})
+        extra_root = self.root / 'other-videos'; extra_root.mkdir()
+        mixed_section = ('<MediaContainer><Directory key="9" type="movie" '
+                         'agent="com.plexapp.agents.none" scanner="Plex Video Files Scanner">'
+                         f'<Location path="{self.video}"/><Location path="{extra_root}"/>'
+                         '</Directory></MediaContainer>')
+        with patch.object(v.requests, 'get', return_value=self.plex_response(mixed_section)):
+            with self.assertRaisesRegex(ValueError, 'must_be_dedicated'):
                 v.plex_library_validation(self.cfg, {'plex_token':'secret'})
 
     def test_plex_refresh_targets_only_the_configured_video_section(self):
