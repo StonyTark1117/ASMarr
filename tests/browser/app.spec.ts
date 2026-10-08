@@ -112,6 +112,18 @@ test("creator monitoring, identity detail and mass editing", async ({
       );
     }, { timeout: 20000 })
     .toBe(true);
+  const wantedVideo = (
+    await (
+      await request.get("/api/v1/video/wanted", {
+        headers: { "X-Api-Key": auth().apiKey },
+      })
+    ).json()
+  ).find((row: any) => row.key === "fixture:bedtime");
+  expect(wantedVideo).toMatchObject({
+    media_kind: "Video",
+    video_state: "wanted",
+    audio_state: "wanted",
+  });
   await page.getByLabel("Video quality profile").selectOption("4");
   await expect
     .poll(async () => {
@@ -478,6 +490,11 @@ test("system status updates and failed video workspace", async ({ page }) => {
   await expect(
     page.getByText("Failed visual copy", { exact: true }),
   ).toBeVisible();
+  const failedRow = page
+    .getByRole("row")
+    .filter({ has: page.getByText("Failed visual copy", { exact: true }) });
+  await expect(failedRow.getByText("complete", { exact: true })).toBeVisible();
+  await expect(failedRow.getByText("failed", { exact: true })).toBeVisible();
   await expect(
     page.getByText("Successful visual copy", { exact: true }),
   ).not.toBeVisible();

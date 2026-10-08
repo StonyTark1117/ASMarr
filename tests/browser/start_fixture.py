@@ -32,9 +32,16 @@ try:
     for _ in range(100):
         if process.poll() is not None:raise RuntimeError('Browser fixture backend exited')
         try:
-            if requests.get('https://127.0.0.1:8789/healthz',verify=False,timeout=1).status_code==200:break
-        except requests.RequestException:pass
+            healthy=requests.get('https://127.0.0.1:8789/healthz',verify=False,timeout=1).status_code==200
+            schema=False
+            if (state/'asmarr.db').exists():
+                with sqlite3.connect(state/'asmarr.db',timeout=1) as probe:
+                    schema=probe.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'").fetchone() is not None
+            if healthy and schema:break
+        except (requests.RequestException,sqlite3.Error):pass
         time.sleep(.2)
+    else:
+        raise RuntimeError('Browser fixture backend schema did not become ready')
     library=session/'library';library.mkdir(exist_ok=True)
     video_library=session/'video-library';video_library.mkdir(exist_ok=True)
     class PlexFixture(BaseHTTPRequestHandler):
