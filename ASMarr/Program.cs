@@ -189,8 +189,11 @@ api.MapPut("/settings/{key}",(string key,JsonElement j)=> {if(key is not ("namin
 api.MapGet("/integrations",()=>IntegrationStatus(store));
 api.MapPut("/integrations/{kind}",async(string kind,JsonElement value)=> {
     if(kind is not ("prowlarr" or "qbittorrent" or "plex" or "notifications"))return Results.BadRequest();
+    if(kind=="plex"&&value.ValueKind==JsonValueKind.Object&&value.TryGetProperty("video",out _))
+        return Results.BadRequest(new{error="Configure the Plex video section through the dedicated validated video binding"});
     string path=System.IO.Path.Combine(store.ConfigRoot,"integrations.json");var data=File.Exists(path)?JsonSerializer.Deserialize<Dictionary<string,JsonElement>>(await File.ReadAllTextAsync(path))!:new();data[kind]=value;
-    await File.WriteAllTextAsync(path,JsonSerializer.Serialize(data));if(!OperatingSystem.IsWindows())File.SetUnixFileMode(path,UnixFileMode.UserRead|UnixFileMode.UserWrite);
+    string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";
+    await File.WriteAllTextAsync(temporary,JsonSerializer.Serialize(data));if(!OperatingSystem.IsWindows())File.SetUnixFileMode(temporary,UnixFileMode.UserRead|UnixFileMode.UserWrite);File.Move(temporary,path,true);
     return Results.Ok();
 });
 foreach(string resource in new[]{"searches","download-clients","media-servers"})api.MapGet("/"+resource,()=>IntegrationStatus(store));

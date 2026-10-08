@@ -29,7 +29,10 @@ plex_server=None
 def terminate(*args):process.terminate()
 signal.signal(signal.SIGTERM,terminate);signal.signal(signal.SIGINT,terminate)
 try:
-    for _ in range(100):
+    # First boot generates an intentionally expensive password hash before
+    # Kestrel starts. Allow it most of Playwright's 60-second web-server budget
+    # so a loaded CI runner cannot be mistaken for a schema/startup failure.
+    for _ in range(250):
         if process.poll() is not None:raise RuntimeError('Browser fixture backend exited')
         try:
             healthy=requests.get('https://127.0.0.1:8789/healthz',verify=False,timeout=1).status_code==200

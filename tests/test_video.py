@@ -4,6 +4,8 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -210,6 +212,43 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(result['status'], 'paused_low_space')
         self.assertEqual(result['available'], low)
         self.assertEqual(download.call_count, 1)
+
+    def test_configured_concurrency_runs_multiple_file_database_transfers(self):
+        database_path = self.root / 'video-queue.db'
+        file_db = sqlite3.connect(database_path)
+        file_db.row_factory = sqlite3.Row
+        self.db.backup(file_db)
+        file_db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)
+                         VALUES('second','https://youtu.be/secondvideo1','[]','youtube','Creator','Second',1704067201,'pending')""")
+        file_db.execute("INSERT INTO aliases VALUES('second','second')")
+        file_db.execute("INSERT INTO media_assets(recording_key,media_kind,wanted,state) VALUES('second','Audio',1,'wanted')")
+        v.add_candidate(file_db, 'recording', 'youtube', 'https://youtu.be/abcdefghijk', details={'height':1080})
+        v.add_candidate(file_db, 'second', 'youtube', 'https://youtu.be/secondvideo1', details={'height':720})
+        file_db.commit()
+        cfg = dict(self.cfg, video_concurrency=2)
+        barrier = threading.Barrier(2)
+        active = maximum = 0
+        guard = threading.Lock()
+
+        def transfer(*_):
+            nonlocal active, maximum
+            with guard:
+                active += 1
+                maximum = max(maximum, active)
+            barrier.wait(timeout=2)
+            time.sleep(.05)
+            with guard:
+                active -= 1
+            return {'status':'imported'}
+
+        try:
+            with patch.object(v, 'download_video', side_effect=transfer) as download:
+                result = v.process_queue(file_db, cfg)
+            self.assertEqual(result['concurrency'], 2)
+            self.assertEqual(download.call_count, 2)
+            self.assertEqual(maximum, 2)
+        finally:
+            file_db.close()
 
     def test_terminal_source_is_unavailable_while_transient_failure_retries(self):
         v.add_candidate(self.db, 'recording', 'youtube', 'https://youtu.be/abcdefghijk')

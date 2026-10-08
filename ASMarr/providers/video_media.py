@@ -1,6 +1,8 @@
 """Visual-ASMR discovery, ranking, acquisition and atomic import support."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -8,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -581,6 +584,37 @@ def _format_selector(max_height=None):
     return f'bestvideo*[height<={height}]+bestaudio/best[height<={height}]'
 
 
+def _process_transfer(db, cfg, row, candidate, audio_importer):
+    try:
+        return dict(download_video(db, cfg, row['recording_key'], candidate,
+                                   audio_importer), key=row['recording_key'])
+    except VideoUnavailable as exc:
+        reason = str(exc)
+        with db:
+            db.execute("""UPDATE media_assets SET state='unavailable',error=?,retry_after=0
+                        WHERE recording_key=? AND media_kind='Video'""",
+                       (reason, row['recording_key']))
+        return {'key': row['recording_key'], 'status': 'unavailable',
+                'error': reason}
+    except Exception as exc:
+        attempts = int(row['attempts']) + 1
+        retry = int(time.time()) + min(86400, 300 * 2 ** min(attempts, 8))
+        reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+        with db:
+            db.execute("""UPDATE media_assets SET state='failed',attempts=?,retry_after=?,error=?
+                        WHERE recording_key=? AND media_kind='Video'""",
+                       (attempts, retry, reason, row['recording_key']))
+        return {'key': row['recording_key'], 'status': 'failed', 'error': reason}
+
+
+def _process_transfer_connection(database_path, cfg, row, candidate, audio_importer):
+    with contextlib.closing(sqlite3.connect(database_path, timeout=30)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA busy_timeout=30000')
+        db.execute('PRAGMA foreign_keys=ON')
+        return _process_transfer(db, cfg, row, candidate, audio_importer)
+
+
 def process_queue(db, cfg, audio_importer=None):
     root = Path(cfg['video_root'])
     minimum = int(float(cfg.get('video_free_space_gib', 20)) * 1024 ** 3)
@@ -588,13 +622,14 @@ def process_queue(db, cfg, audio_importer=None):
     free = shutil.disk_usage(usage_path).free
     if free < minimum:
         return {'status': 'paused_low_space', 'available': free, 'required': minimum, 'jobs': []}
-    concurrency = max(1, int(cfg.get('video_concurrency', 1)))
+    concurrency = max(1, min(4, int(cfg.get('video_concurrency', 1))))
     rows = db.execute("""SELECT m.*,a.creator,a.title,a.published,c.video_quality_profile_id
         FROM media_assets m JOIN assets a ON a.key=m.recording_key JOIN creators c ON c.name=a.creator
         WHERE m.media_kind='Video' AND m.wanted=1 AND c.monitor_video=1
           AND m.state IN ('wanted','failed') AND m.retry_after<=?
         ORDER BY COALESCE(a.published,0) DESC LIMIT ?""", (int(time.time()), concurrency)).fetchall()
     results = []
+    prepared = []
     paused_free = None
     for row in rows:
         # A preceding transfer can cross the threshold during the same bounded
@@ -613,21 +648,24 @@ def process_queue(db, cfg, audio_importer=None):
             results.append({'key': row['recording_key'], 'status': 'unavailable'}); continue
         candidate['max_height'] = profile_limit(options)
         with db: db.execute("UPDATE media_assets SET state='downloading',error=NULL WHERE recording_key=? AND media_kind='Video'", (row['recording_key'],))
-        try:
-            results.append(dict(download_video(db, cfg, row['recording_key'], candidate, audio_importer), key=row['recording_key']))
-        except VideoUnavailable as exc:
-            reason = str(exc)
-            with db:
-                db.execute("UPDATE media_assets SET state='unavailable',error=?,retry_after=0 WHERE recording_key=? AND media_kind='Video'",
-                           (reason, row['recording_key']))
-            results.append({'key': row['recording_key'], 'status': 'unavailable',
-                            'error': reason})
-        except Exception as exc:
-            attempts = int(row['attempts']) + 1
-            retry = int(time.time()) + min(86400, 300 * 2 ** min(attempts, 8))
-            reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-            with db: db.execute("UPDATE media_assets SET state='failed',attempts=?,retry_after=?,error=? WHERE recording_key=? AND media_kind='Video'", (attempts, retry, reason, row['recording_key']))
-            results.append({'key': row['recording_key'], 'status': 'failed', 'error': reason})
+        prepared.append((dict(row), candidate))
+    database_path = next((entry[2] for entry in db.execute('PRAGMA database_list')
+                          if entry[1] == 'main'), '')
+    if concurrency > 1 and len(prepared) > 1 and database_path:
+        # Each transfer owns a SQLite connection. Sharing the provider connection
+        # across worker threads would violate sqlite3's thread-affinity guarantee.
+        with ThreadPoolExecutor(max_workers=concurrency,
+                                thread_name_prefix='asmarr-video') as executor:
+            futures = [executor.submit(_process_transfer_connection, database_path,
+                                       cfg, row, candidate, audio_importer)
+                       for row, candidate in prepared]
+            results.extend(future.result() for future in futures)
+    else:
+        # In-memory databases are used by unit tests and cannot be reopened by a
+        # worker. Production always has an on-disk database and uses the bounded
+        # executor whenever concurrency is greater than one.
+        results.extend(_process_transfer(db, cfg, row, candidate, audio_importer)
+                       for row, candidate in prepared)
     result = {'status': 'paused_low_space' if paused_free is not None else 'ok',
               'jobs': results, 'concurrency': concurrency}
     if paused_free is not None:

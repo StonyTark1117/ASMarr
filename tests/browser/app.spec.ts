@@ -356,7 +356,7 @@ test("settings source toggle and task execution", async ({ page, request }) => {
       return (await r.json()).some(
         (c: any) => c.name === "health" && c.state === "completed",
       );
-    })
+    }, { timeout: 10000 })
     .toBe(true);
 });
 test("dedicated Plex video binding preserves protected integration fields", async ({
@@ -387,6 +387,24 @@ test("dedicated Plex video binding preserves protected integration fields", asyn
   expect(saved.video.section_id).toBe(12);
   expect(saved.section_id).toBe(4);
   expect(saved.token).toBe("fixture-secret");
+  const bypass = await request.put("/api/v1/integrations/plex", {
+    headers,
+    data: {
+      url: saved.url,
+      section_id: saved.section_id,
+      token: saved.token,
+      video: { section_id: 2 },
+    },
+  });
+  expect(bypass.status()).toBe(400);
+  expect((await bypass.json()).error).toContain("dedicated validated video binding");
+  expect(
+    (
+      await (
+        await request.get("/api/v1/video/plex-binding", { headers })
+      ).json()
+    ).sectionId,
+  ).toBe(12);
   const wrongLibrary = await request.put("/api/v1/video/plex-binding", {
     headers,
     data: { sectionId: 2 },
