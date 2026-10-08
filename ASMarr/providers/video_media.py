@@ -584,7 +584,8 @@ def _format_selector(max_height=None):
 def process_queue(db, cfg, audio_importer=None):
     root = Path(cfg['video_root'])
     minimum = int(float(cfg.get('video_free_space_gib', 20)) * 1024 ** 3)
-    free = shutil.disk_usage(_nearest_existing(root)).free
+    usage_path = _nearest_existing(root)
+    free = shutil.disk_usage(usage_path).free
     if free < minimum:
         return {'status': 'paused_low_space', 'available': free, 'required': minimum, 'jobs': []}
     concurrency = max(1, int(cfg.get('video_concurrency', 1)))
@@ -594,7 +595,15 @@ def process_queue(db, cfg, audio_importer=None):
           AND m.state IN ('wanted','failed') AND m.retry_after<=?
         ORDER BY COALESCE(a.published,0) DESC LIMIT ?""", (int(time.time()), concurrency)).fetchall()
     results = []
+    paused_free = None
     for row in rows:
+        # A preceding transfer can cross the threshold during the same bounded
+        # batch. Recheck immediately before each new transfer rather than
+        # treating the initial value as a reservation for every selected job.
+        free = shutil.disk_usage(usage_path).free
+        if free < minimum:
+            paused_free = free
+            break
         candidates = [dict(c) for c in db.execute('SELECT * FROM video_candidates WHERE recording_key=? AND interactive_only=0', (row['recording_key'],))]
         profile = db.execute('SELECT resolution,settings FROM video_quality_profiles WHERE id=?', (row['video_quality_profile_id'],)).fetchone()
         options = {'resolution': profile['resolution'], **json.loads(profile['settings'])} if profile else {'resolution': 'Any'}
@@ -619,7 +628,11 @@ def process_queue(db, cfg, audio_importer=None):
             reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
             with db: db.execute("UPDATE media_assets SET state='failed',attempts=?,retry_after=?,error=? WHERE recording_key=? AND media_kind='Video'", (attempts, retry, reason, row['recording_key']))
             results.append({'key': row['recording_key'], 'status': 'failed', 'error': reason})
-    return {'status': 'ok', 'jobs': results, 'concurrency': concurrency}
+    result = {'status': 'paused_low_space' if paused_free is not None else 'ok',
+              'jobs': results, 'concurrency': concurrency}
+    if paused_free is not None:
+        result.update(available=paused_free, required=minimum)
+    return result
 
 
 def plex_library_validation(cfg, secrets):

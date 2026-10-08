@@ -194,6 +194,23 @@ class VideoTests(unittest.TestCase):
             result = v.process_queue(self.db, self.cfg)
         self.assertEqual(result['concurrency'], 1); self.assertEqual(download.call_count, 1)
 
+    def test_free_space_is_rechecked_before_each_transfer(self):
+        self.cfg.update(video_concurrency=2, video_free_space_gib=20)
+        self.db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)
+                         VALUES('second','https://youtu.be/secondvideo1','[]','youtube','Creator','Second',1704067201,'pending')""")
+        self.db.execute("INSERT INTO aliases VALUES('second','second')")
+        self.db.execute("INSERT INTO media_assets(recording_key,media_kind,wanted,state) VALUES('second','Audio',1,'wanted')")
+        v.add_candidate(self.db, 'recording', 'youtube', 'https://youtu.be/abcdefghijk', details={'height':1080})
+        v.add_candidate(self.db, 'second', 'youtube', 'https://youtu.be/secondvideo1', details={'height':720})
+        enough, low = 30 * 1024 ** 3, 10 * 1024 ** 3
+        usage = lambda free: type('Usage', (), {'free': free})()
+        with patch.object(v.shutil, 'disk_usage', side_effect=[usage(enough), usage(enough), usage(low)]), \
+             patch.object(v, 'download_video', return_value={'status':'imported'}) as download:
+            result = v.process_queue(self.db, self.cfg)
+        self.assertEqual(result['status'], 'paused_low_space')
+        self.assertEqual(result['available'], low)
+        self.assertEqual(download.call_count, 1)
+
     def test_terminal_source_is_unavailable_while_transient_failure_retries(self):
         v.add_candidate(self.db, 'recording', 'youtube', 'https://youtu.be/abcdefghijk')
         with patch.object(v, 'download_video', side_effect=v.VideoUnavailable('video_source_unavailable')):
