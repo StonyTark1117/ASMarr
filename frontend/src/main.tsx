@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr";
 import {
@@ -136,6 +136,8 @@ function App() {
     [sourceForm, setSourceForm] = useState(""),
     [addingCreator, setAddingCreator] = useState(false),
     [integration, setIntegration] = useState("prowlarr");
+  const activePage = useRef("Dashboard");
+  const creatorRequest = useRef(0);
   useEffect(() => {
     api("auth")
       .then(() => setAuth(true))
@@ -261,6 +263,8 @@ function App() {
     return r;
   };
   const navigate = (p: string) => {
+    activePage.current = p;
+    creatorRequest.current++;
     setPage(p);
     setData(null);
     setCreator(null);
@@ -271,8 +275,14 @@ function App() {
     setTab(p === "System" ? "Tasks" : p === "Videos" ? "Wanted" : "Sources");
   };
   const openCreator = async (c: Row) => {
+    const request = ++creatorRequest.current;
     const d = await act("creators/" + c.id, "GET");
-    if (d) setCreator(d);
+    if (
+      d &&
+      request === creatorRequest.current &&
+      activePage.current === "Creators"
+    )
+      setCreator(d);
   };
   const openRecording = async (r: Row) => {
     const d = await act(
