@@ -58,6 +58,18 @@ class CutoverSafetyTests(unittest.TestCase):
         for day in (8,9,10): self.cycle(f'2026-10-{day:02d}T11:00:00Z')
         self.assertTrue(cutover.preflight(self.now)['ready'])
 
+    def test_extra_early_day_observation_preserves_completed_window(self):
+        for day in (8,9,10):self.cycle(f'2026-10-{day:02d}T11:00:00Z')
+        self.cycle('2026-10-11T06:00:00Z')
+        now=dt.datetime(2026,10,11,6,30,tzinfo=dt.timezone.utc)
+        self.assertTrue(cutover.preflight(now)['ready'])
+
+    def test_three_calendar_days_still_require_elapsed_observation_time(self):
+        for stamp in ('2026-10-08T23:00:00Z','2026-10-09T11:00:00Z','2026-10-10T20:00:00Z'):
+            self.cycle(stamp)
+        now=dt.datetime(2026,10,10,21,tzinfo=dt.timezone.utc)
+        self.assertFalse(cutover.preflight(now)['ready'])
+
     def test_three_same_day_runs_do_not_satisfy_daily_gate(self):
         for hour in (8,9,10): self.cycle(f'2026-10-10T{hour:02d}:00:00Z')
         self.assertFalse(cutover.preflight(self.now)['ready'])

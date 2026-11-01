@@ -61,7 +61,11 @@ def preflight(now=None):
                     comparison.get('legacyImplementationSha256') and all(comparison.get(k) is True for k in PARITY_FIELDS)):
                 daily[started[:10]]=started
         stamps=[dt.datetime.fromisoformat(s.replace('Z','+00:00')) for s in daily.values()]
-        three_days=len(stamps)>=3 and (stamps[-1]-stamps[-3]).total_seconds()>=46*3600 and 0<=(now-stamps[-1]).total_seconds()<30*3600
+        # Additional early-day observations must not revoke an already proven
+        # three-day window. All stamps are clean and bound to this deployment;
+        # require three distinct days, sufficient total observation time and a
+        # fresh latest observation, rather than only examining the last three.
+        three_days=len(stamps)>=3 and (stamps[-1]-stamps[0]).total_seconds()>=46*3600 and 0<=(now-stamps[-1]).total_seconds()<30*3600
         audit=db.execute('SELECT result FROM migration_audits ORDER BY id DESC LIMIT 1').fetchone()
         evidence_path=ACCEPTANCE/'pre-cutover.json'
         evidence=json.loads(evidence_path.read_text()) if evidence_path.exists() else {}
