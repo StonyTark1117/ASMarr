@@ -135,6 +135,18 @@ tree, blocks network connections, and runs six temporary-database outage/recover
 checks using the installed providers. This is runtime fixture evidence only—not
 a substitute for live direct/fallback canaries or a production repeat cycle.
 
+`ops/canary_torznab.py prepare --directory <new-protected-directory>` prepares
+one small, pinned CC0 LibriVox audio torrent after verifying the Internet Archive
+license, file size and SHA-1. `serve --directory <directory>` exposes its metadata
+only on loopback port 18787. An operator may temporarily register that endpoint
+as a Generic Torznab indexer for the controlled live fallback test. Its single
+public HTTPS web seed works without changing the client's VPN interface. This
+tool does not register indexers, alter recordings, submit jobs, or generate
+acceptance results: actual Prowlarr search, qBittorrent transfer, verified import
+and Plex indexing must still succeed. Remove only the operator-created temporary
+indexer and stop the fixture after verification; preserve downloaded media and
+the protected evidence.
+
 Final scheduler enablement uses `ops/production_acceptance.py`. Its default is a
 read-only audit. Protected `production-acceptance.json` must name the current
 `testedCommit` and `artifactSha256`, distinct `directKey`/`fallbackKey`, their
