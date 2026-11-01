@@ -149,6 +149,20 @@ class CutoverSafetyTests(unittest.TestCase):
         with patch.dict(sys.modules,{'smoke':smoke}):
             with self.assertRaises(RuntimeError):cutover.run_command('discovery',1)
 
+    def test_bounded_discovery_scope_is_forwarded_once(self):
+        submitted=[]
+        smoke=types.SimpleNamespace(command=lambda name,args: submitted.append((name,args)) or 'canary',
+                                    wait=lambda handle,deadline: {'status':'healthy'})
+        with patch.dict(sys.modules,{'smoke':smoke}):
+            self.assertEqual({'status':'healthy'},cutover.run_command('discovery',1,{'kind':'sfw'}))
+        self.assertEqual([('discovery',{'kind':'sfw'})],submitted)
+
+    def test_invalid_cutover_scope_is_rejected_before_service_changes(self):
+        with patch.object(cutover.subprocess,'run') as run:
+            with self.assertRaisesRegex(ValueError,'unsupported_cutover_discovery_kind'):
+                cutover.apply('invalid')
+        run.assert_not_called()
+
     def test_plex_error_code_is_not_successful_indexing(self):
         smoke=types.SimpleNamespace(command=lambda name:1,wait=lambda *args:{'status':'http_503'})
         with patch.dict(sys.modules,{'smoke':smoke}):

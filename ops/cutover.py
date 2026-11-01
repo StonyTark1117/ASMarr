@@ -23,9 +23,10 @@ PARITY_FIELDS=('discoveryParity','eligibilityAndSourceParity','checkpointCalcula
                'productionCheckpointsUnchanged','applicationCheckpointsUnchanged','mediaUnchanged',
                'playlistPreviewHealthy','playlistCalculationParity')
 
-def run_command(name, deadline):
+def run_command(name, deadline, arguments=None):
     from smoke import command,wait
-    result=wait(command(name),deadline)
+    handle=command(name) if arguments is None else command(name,arguments)
+    result=wait(handle,deadline)
     if not isinstance(result,dict) or result.get('status') in {'running','failed','degraded'}:
         # An observation timeout is not completion. Keep the durable command ID
         # available to the operator; never enqueue another run automatically.
@@ -74,7 +75,9 @@ def preflight(now=None):
         result['ready']=result['mode']=='shadow' and three_days and result['migrationPassed'] and tests_passed and release_matches and result['integrity']=='ok'
         return result
 
-def apply():
+def apply(discovery_kind='all'):
+    if discovery_kind not in {'all','sfw','youtube','reddit','soundgasm'}:
+        raise ValueError('unsupported_cutover_discovery_kind')
     report=preflight()
     if not report['ready']:print(json.dumps(report));raise SystemExit('Pre-cutover gates are incomplete')
     if (ACCEPTANCE/'transition.json').exists():raise RuntimeError('Existing transition journal requires review before another cutover')
@@ -120,7 +123,7 @@ def apply():
     try:
         subprocess.run(['systemctl','daemon-reload'],check=True);subprocess.run(['systemctl','start','asmarr'],check=True)
         time.sleep(5)
-        discovery=run_command('discovery',1800)
+        discovery=run_command('discovery',1800,{'kind':discovery_kind})
         cycle=run_command('queue',1800)
         if cycle.get('failed'):raise RuntimeError('Bounded acquisition cycle contains failed transfers')
         plex=run_command('plex',300)
@@ -133,7 +136,7 @@ def apply():
         preservation=compare(plex_before,runtime_snapshot())
         write_protected(ACCEPTANCE/('plex-preservation-'+stamp+'.json'),preservation)
         if not preservation['passed']:raise RuntimeError('Plex preservation audit requires review before accepting cutover')
-        report.update(finalMigration=result,finalScan=scan,discovery=discovery,boundedCycle=cycle,plex=plex,playlists=playlists,indexing=indexing,playlistVerification=playlist_verification,plexPreservation=preservation)
+        report.update(discoveryKind=discovery_kind,finalMigration=result,finalScan=scan,discovery=discovery,boundedCycle=cycle,plex=plex,playlists=playlists,indexing=indexing,playlistVerification=playlist_verification,plexPreservation=preservation)
         target=Path('/var/lib/asmarr/acceptance/cutover.json');target.write_text(json.dumps(report));target.chmod(0o600)
     finally:
         cfg['max_downloads_per_run']=original_limit;config.write_text(yaml.safe_dump(cfg))
@@ -164,7 +167,7 @@ def rollback():
     print(json.dumps({'status':'rolled_back','media':'preserved','oldTimer':'enabled'}))
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();g=parser.add_mutually_exclusive_group();g.add_argument('--apply',action='store_true');g.add_argument('--rollback',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();g=parser.add_mutually_exclusive_group();g.add_argument('--apply',action='store_true');g.add_argument('--rollback',action='store_true');parser.add_argument('--discovery-kind',choices=['all','sfw','youtube','reddit','soundgasm'],default='all',help='Source scope for the single bounded cutover cycle; does not change scheduled polling');args=parser.parse_args()
     if args.rollback:rollback()
-    elif args.apply:apply()
+    elif args.apply:apply(args.discovery_kind)
     else:print(json.dumps(preflight()))

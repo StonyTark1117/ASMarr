@@ -113,6 +113,11 @@ subsequent application changes must pass the combined regression suite again.
 requires three qualified daily observations and explicit `pre-cutover.json`
 test evidence. It leaves scheduling disabled after the bounded cycle until the
 remaining live production acceptance checks pass.
+For a source-scoped canary, `--apply --discovery-kind sfw` limits discovery in
+that single bounded cycle. This does not change normal scheduled polling or
+restrict processing of any already-pending recordings: inspect the final legacy
+queue before using it. The deployed application and its qualified shadow evidence
+do not need to change for this operator-only option.
 Approval also records `testedCommit` and `artifactSha256`, matching the protected
 `acceptance/deployed-release.json` manifest (`sourceCommit`, `artifactSha256`).
 `ops/release_integrity.py` fingerprints the entire deployed application tree,
