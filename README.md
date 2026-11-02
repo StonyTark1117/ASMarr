@@ -39,9 +39,41 @@ mappings before provisioning an isolated `asmarr` account. It copies existing
 credentials directly into protected server files without exposing them. Install
 the published application and `ops/asmarr.service`, then start the service.
 
-The service creates an initial administrator password in
-`/etc/asmarr/initial-admin.txt` (mode 0600). Retrieve it locally as root and change
-the password through Settings. API authentication uses `X-Api-Key`, with the key
+### First login and password recovery
+
+There is no built-in/default password. On a fresh install the service generates
+a unique cryptographically random 36-character administrator password, stores
+only its salted PBKDF2-SHA256 hash in `auth.json`, and supplies the initial login
+in `/etc/asmarr/initial-admin.txt` (mode 0600, inside the protected configuration
+directory). After installing and starting the service, complete installation
+from a private interactive terminal on the server:
+
+```sh
+sudo systemctl enable --now asmarr
+sudo python3 ops/admin_login.py
+```
+
+Run the helper from your source checkout (or use its absolute path). It displays
+the generated username/password only to a terminal, never to a pipe or redirected
+log. Do not record that terminal. Connect using HTTPS and change the password
+through Settings → Administrator password (at least 12 characters); this removes
+the initial plaintext credential file. Restarting or upgrading an existing
+installation preserves its login and does not generate or display another one.
+
+If you lose the password, run `sudo python3 ops/admin_login.py --reset` in a
+private interactive server terminal and confirm `RESET`. This generates and
+displays a new random password once, preserves the API key and other auth fields,
+atomically replaces the mode-0600 hash file with the same ownership, and removes
+any obsolete initial-login file. It never saves the new password in plaintext,
+accepts no password argument, and needs no service restart. It does not revoke
+already-issued session cookies. This is an explicit recovery operation, not an
+installation/upgrade step.
+
+Never put personal passwords in source, examples, test fixtures, shell arguments,
+Git commits, or issue/CI logs. Runtime credential files, password-recovery temp
+files, SSH password files, environment files, and rollout backups are ignored by
+Git; do not force-add them. Keep server-side configuration/backups protected and
+outside source checkouts. API authentication uses `X-Api-Key`, with the key
 stored in `/etc/asmarr/auth.json`. Session cookies are secure, HTTP-only and strict
 same-site. Cookie-authenticated mutations require `X-ASMarr-Request: 1` and a
 matching origin. The deployment certificate is local; trust it in your browser

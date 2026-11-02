@@ -16,6 +16,14 @@ reference/
 **/source-secrets.json
 **/initial-admin.txt
 **/tls.*
+**/.auth-reset-*
+**/sshforcodex
+**/sshpass
+**/sshpass.txt
+**/.env
+**/.env.*
+!**/.env.example
+**/asmarr-rollout-backups/
 tests/browser/runtime/
 **/test-results/
 **/playwright-report/
