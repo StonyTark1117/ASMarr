@@ -491,5 +491,103 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(get.call_args.args[0], 'http://plex:32400/library/sections/9/refresh')
         self.assertEqual(v._meta_get(self.db, 'plex_video_pending_paths'), [])
 
+    def test_scan_tracks_move_rename_delete_restore_and_refreshes_only_video(self):
+        result = v.import_video(self.db, self.cfg, 'recording', self.video_file(),
+                                {'provider':'youtube','provider_id':'abcdefghijk'})
+        saved = Path(result['path'])
+        audio_before = tuple(self.db.execute("SELECT * FROM media_assets WHERE media_kind='Audio'").fetchone())
+        self.cfg['plex'] = {'url':'http://plex:32400','section_id':3,'video':{'section_id':9}}
+        # Imported files remain reconciled even after monitoring is disabled.
+        self.db.execute('UPDATE creators SET monitor_video=0')
+        moved = self.video / 'Organized' / 'renamed.mp4'; moved.parent.mkdir()
+        with patch.object(v, 'plex_library_validation', return_value={'status':'healthy'}), \
+             patch.object(v.requests, 'get', return_value=self.plex_response('<MediaContainer/>')) as get:
+            v.plex_refresh(self.db, self.cfg, {'plex_token':'secret'})
+            saved.rename(moved)
+            scan = v.scan_library(self.db, self.cfg)
+            self.assertEqual(scan['changes'][0]['change'], 'moved')
+            self.assertEqual(scan['changes'][0]['path'], str(moved))
+            self.assertEqual(set(v._meta_get(self.db, 'plex_video_pending_paths')), {str(saved),str(moved)})
+            v.plex_refresh(self.db, self.cfg, {'plex_token':'secret'})
+            retained = moved.read_bytes(); moved.unlink()
+            self.assertEqual(v.scan_library(self.db, self.cfg)['changes'][0]['status'], 'missing')
+            v.plex_refresh(self.db, self.cfg, {'plex_token':'secret'})
+            self.assertEqual(v.scan_library(self.db, self.cfg)['changes'], [])
+            self.assertEqual(v.plex_refresh(self.db, self.cfg, {'plex_token':'secret'})['status'], 'not_needed')
+            moved.write_bytes(retained)
+            self.assertEqual(v.scan_library(self.db, self.cfg)['changes'][0]['change'], 'restored')
+            v.plex_refresh(self.db, self.cfg, {'plex_token':'secret'})
+        self.assertEqual([call.args[0] for call in get.call_args_list],
+                         ['http://plex:32400/library/sections/9/refresh'] * 4)
+        self.assertEqual(tuple(self.db.execute("SELECT * FROM media_assets WHERE media_kind='Audio'").fetchone()), audio_before)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM history').fetchone()[0], 3)
+        self.assertTrue(moved.is_file())
+
+    def test_scan_refuses_ambiguous_moves_and_outside_symlinks(self):
+        result = v.import_video(self.db, self.cfg, 'recording', self.video_file(),
+                                {'provider':'youtube','provider_id':'abcdefghijk'})
+        saved = Path(result['path']); data = saved.read_bytes(); saved.unlink()
+        first, second = self.video / 'first.mp4', self.video / 'second.mp4'
+        first.write_bytes(data); second.write_bytes(data)
+        self.assertEqual(v.scan_library(self.db, self.cfg)['changes'][0]['status'], 'missing')
+        self.assertEqual(self.db.execute("SELECT saved_path FROM media_assets WHERE media_kind='Video'").fetchone()[0], str(saved))
+        first.unlink(); second.unlink()
+        outside = self.root / 'outside.mp4'; outside.write_bytes(data)
+        first.symlink_to(outside)
+        self.assertEqual(v.scan_library(self.db, self.cfg)['changes'], [])
+        self.assertEqual(self.db.execute("SELECT state FROM media_assets WHERE media_kind='Video'").fetchone()[0], 'missing')
+        self.assertEqual(outside.read_bytes(), data)
+
+    def test_scan_failure_never_marks_files_missing_or_queues_refresh(self):
+        result = v.import_video(self.db, self.cfg, 'recording', self.video_file(),
+                                {'provider':'youtube','provider_id':'abcdefghijk'})
+        with self.db: v._meta_set(self.db, 'plex_video_pending_paths', [])
+        def denied(root, *, followlinks, onerror):
+            onerror(PermissionError('unreadable directory'))
+        with patch.object(v.os, 'walk', side_effect=denied):
+            with self.assertRaises(PermissionError): v.scan_library(self.db, self.cfg)
+        self.assertEqual(self.db.execute("SELECT state FROM media_assets WHERE media_kind='Video'").fetchone()[0], 'imported')
+        self.assertEqual(v._meta_get(self.db, 'plex_video_pending_paths'), [])
+        self.assertTrue(Path(result['path']).is_file())
+        with patch.object(v.os, 'access', return_value=False):
+            with self.assertRaisesRegex(ValueError, 'root_not_accessible'):
+                v.scan_library(self.db, self.cfg)
+
+    def test_scan_bootstraps_older_import_identity_without_notifying_plex(self):
+        result = v.import_video(self.db, self.cfg, 'recording', self.video_file(),
+                                {'provider':'youtube','provider_id':'abcdefghijk'})
+        self.db.execute("UPDATE media_assets SET details='{}' WHERE media_kind='Video'")
+        with self.db: v._meta_set(self.db, 'plex_video_pending_paths', [])
+        self.assertEqual(v.scan_library(self.db, self.cfg)['changes'], [])
+        details = json.loads(self.db.execute("SELECT details FROM media_assets WHERE media_kind='Video'").fetchone()[0])
+        self.assertEqual(details['asmarr_file']['sha256'], result['sha256'])
+        self.assertEqual(v._meta_get(self.db, 'plex_video_pending_paths'), [])
+
+    def test_scan_does_not_accept_different_bytes_as_a_restored_import(self):
+        result = v.import_video(self.db, self.cfg, 'recording', self.video_file(),
+                                {'provider':'youtube','provider_id':'abcdefghijk'})
+        saved = Path(result['path']); saved.unlink()
+        v.scan_library(self.db, self.cfg)
+        saved.write_bytes(b'not the original media')
+        self.assertEqual(v.scan_library(self.db, self.cfg)['changes'], [])
+        self.assertEqual(self.db.execute("SELECT state FROM media_assets WHERE media_kind='Video'").fetchone()[0], 'missing')
+        self.assertEqual(saved.read_bytes(), b'not the original media')
+
+    def test_scan_without_imported_video_does_no_filesystem_work(self):
+        with patch.object(v.os, 'walk') as walk:
+            self.assertEqual(v.scan_library(self.db, self.cfg)['status'], 'not_needed')
+        walk.assert_not_called()
+
+    def test_failed_plex_refresh_preserves_pending_file_changes(self):
+        with self.db: v._meta_set(self.db, 'plex_video_pending_paths', ['/video/deleted.mp4'])
+        self.cfg['plex'] = {'url':'http://plex:32400','video':{'section_id':9}}
+        response = self.plex_response('<MediaContainer/>')
+        response.raise_for_status.side_effect = v.requests.HTTPError('temporary failure')
+        with patch.object(v, 'plex_library_validation', return_value={'status':'healthy'}), \
+             patch.object(v.requests, 'get', return_value=response):
+            with self.assertRaises(v.requests.HTTPError):
+                v.plex_refresh(self.db, self.cfg, {'plex_token':'secret'})
+        self.assertEqual(v._meta_get(self.db, 'plex_video_pending_paths'), ['/video/deleted.mp4'])
+
 
 if __name__ == '__main__': unittest.main()

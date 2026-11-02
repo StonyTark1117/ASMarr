@@ -520,6 +520,7 @@ def import_video(db, cfg, key, source, candidate, audio_importer=None, artwork=N
             if video_created: destination.unlink(missing_ok=True)
             raise
     now = int(time.time())
+    info['asmarr_file'] = {'sha256': expected, 'size': destination.stat().st_size}
     with db:
         db.execute("""UPDATE media_assets SET state='imported',wanted=1,saved_path=?,acquired=?,error=NULL,retry_after=0,details=?
                     WHERE recording_key=? AND media_kind='Video'""",
@@ -575,6 +576,86 @@ def _meta_get(db, key, default=None):
 
 def _meta_set(db, key, value):
     db.execute('INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)', (key, json.dumps(value)))
+
+
+def scan_library(db, cfg):
+    """Reconcile externally changed paths without moving or deleting any media."""
+    rows = db.execute("""SELECT * FROM media_assets WHERE media_kind='Video'
+                         AND state IN ('imported','missing') AND saved_path IS NOT NULL""").fetchall()
+    if not rows:
+        return {'status': 'not_needed', 'changes': []}
+    validate_roots(cfg['output_root'], cfg['video_root'])
+    root = Path(cfg['video_root']).resolve()
+    if not root.is_dir() or not os.access(root, os.R_OK | os.X_OK):
+        raise ValueError('video_scan_root_not_accessible')
+    # Finish the inventory before any state changes. An unreadable directory
+    # must not be mistaken for a batch of deleted files.
+    def fail(error):
+        raise error
+    inventory = {}
+    for directory, _, names in os.walk(root, followlinks=False, onerror=fail):
+        for name in names:
+            path = Path(directory) / name
+            if path.suffix.lower() not in VIDEO_EXTENSIONS or path.is_symlink():
+                continue
+            if path.is_file():
+                inventory[str(path)] = path.stat().st_size
+    claimed = {str(Path(row['saved_path']).resolve()) for row in rows}
+    hashes, updates, changes, pending = {}, [], [], set()
+    for row in rows:
+        old = str(Path(row['saved_path']).resolve())
+        if not Path(old).is_relative_to(root):
+            raise ValueError('video_scan_path_outside_root')
+        details = json.loads(row['details'] or '{}')
+        identity = details.get('asmarr_file') or {}
+        new = old if old in inventory else None
+        if new and row['state'] == 'missing':
+            if identity.get('sha256'):
+                hashes[new] = _digest(new)
+                if hashes[new] != identity['sha256']:
+                    new = None
+            else:
+                probe(new)
+        if new is None and identity.get('sha256'):
+            matches = []
+            for path, size in inventory.items():
+                if path in claimed or size != identity.get('size'):
+                    continue
+                if path not in hashes:
+                    hashes[path] = _digest(path)
+                if hashes[path] == identity['sha256']:
+                    matches.append(path)
+            # Never guess when multiple byte-identical files could be the move.
+            if len(matches) == 1:
+                new = matches[0]
+                claimed.add(new)
+        state = 'imported' if new else 'missing'
+        if new and not identity:
+            details['asmarr_file'] = {'sha256': _digest(new), 'size': inventory[new]}
+        if new != old or state != row['state']:
+            # An already-missing file should not produce repeated refreshes.
+            if new or row['state'] != 'missing':
+                change = {'key': row['recording_key'], 'mediaKind': 'Video',
+                          'status': state, 'oldPath': old, 'path': new,
+                          'change': 'moved' if new and new != old else
+                                    'restored' if new else 'missing'}
+                changes.append(change)
+                pending.add(old)
+                if new:
+                    pending.add(new)
+        updates.append((state, new or old, None if new else 'video_file_missing',
+                        json.dumps(details), row['recording_key']))
+    with db:
+        db.executemany("""UPDATE media_assets SET state=?,saved_path=?,error=?,details=?
+                          WHERE recording_key=? AND media_kind='Video'""", updates)
+        if pending:
+            _meta_set(db, 'plex_video_pending_paths',
+                      sorted(set(_meta_get(db, 'plex_video_pending_paths', [])) | pending))
+        for change in changes:
+            db.execute("INSERT INTO history(at,event,recording_key,details) VALUES(?,?,?,?)",
+                       (dt.datetime.now(dt.timezone.utc).isoformat(), 'video-file-' + change['change'],
+                        change['key'], json.dumps(change)))
+    return {'status': 'ok', 'files': len(inventory), 'changes': changes}
 
 
 def download_video(db, cfg, key, candidate, audio_importer=None):

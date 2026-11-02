@@ -703,7 +703,8 @@ def dispatch(operation,args):
         if operation=='migrate': return migrate(db,cfg)
         if operation=='scan':
             manifest=media_manifest(db); original=core.meta_get(db,'migration_media_manifest',manifest)
-            return {'files':len(manifest['files']),'missing':manifest['missing'],'outside':manifest['outside'],'unchanged':all(manifest['files'].get(k)==v for k,v in original['files'].items())}
+            return {'files':len(manifest['files']),'missing':manifest['missing'],'outside':manifest['outside'],'unchanged':all(manifest['files'].get(k)==v for k,v in original['files'].items()),
+                    'video':video_media.scan_library(db,cfg)}
         if operation=='discover': return discover(db,cfg,secrets,args.get('kind','all'),args.get('shadow',True))
         if operation=='metadata':
             row=db.execute('SELECT * FROM assets WHERE key=?',(args['key'],)).fetchone()

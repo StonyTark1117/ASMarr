@@ -73,6 +73,12 @@ item cap; Reddit follows the continuation tokens exposed by its API. These scans
 cover history available from the providers, not deleted posts or history their
 APIs no longer expose. Page checkpoints survive transient failures, and disabling
 video monitoring stops further discovery without deleting imported media.
+The existing Disk Scan also reconciles imported video paths: a unique matching
+content hash identifies a move or rename within the video root; missing files
+remain recorded as missing rather than being silently reacquired. Restored files
+return to imported. Each change queues a refresh of only the configured video
+Plex section. Scanning never moves or deletes files, and an inaccessible root or
+directory fails the scan without marking its contents missing.
 
 Acquisition profiles preserve the migrated legacy text policy unless custom
 fields are supplied. Custom fields are `allowedSpeakers` and `allowedAudiences`

@@ -90,6 +90,11 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             store.Execute("UPDATE tasks SET last_run=$now,last_result=$result WHERE name=$name",("name",name),("now",DateTimeOffset.UtcNow.ToString("O")),("result",json));
             store.Log("info",name+" completed");
             if(name is "video-backfill" or "video-queue")await hub.Clients.All.SendAsync("assetState",new {mediaKind="Video",command=id,state="updated"},ct);
+            if(name=="disk-scan"&&result is JsonElement scanResult&&scanResult.TryGetProperty("video",out var videoScan)&&videoScan.TryGetProperty("changes",out var fileChanges))
+                foreach(var change in fileChanges.EnumerateArray())
+                    await hub.Clients.All.SendAsync("assetState",new {mediaKind="Video",command=id,
+                        recordingKey=change.GetProperty("key").GetString(),
+                        state=change.GetProperty("status").GetString()},ct);
             if(name=="video-queue"&&result is JsonElement videoResult&&videoResult.TryGetProperty("jobs",out var videoJobs))
                 foreach(var job in videoJobs.EnumerateArray())
                     await hub.Clients.All.SendAsync("assetState",new {mediaKind="Video",command=id,
