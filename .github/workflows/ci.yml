@@ -31,6 +31,12 @@ jobs:
         working-directory: tests/browser
       - run: npm test
         working-directory: tests/browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure-${{ github.sha }}
+          path: tests/browser/test-results/
+          if-no-files-found: ignore
       - run: python ops/fetch_toolchain.py --output toolchain-build
       - run: python ops/package_release.py --publish publish --toolchain toolchain-build --output dist --commit "$GITHUB_SHA" --version 0.3.0
       - uses: actions/upload-artifact@v4

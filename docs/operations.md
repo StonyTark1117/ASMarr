@@ -122,6 +122,22 @@ upgrader payload; the `linux-x64.tar.gz` archive is the fresh-install bundle.
 Both are checksummed and contain the same application tree. Neither archive
 alone bypasses CI, installed-fixture, backup or preservation gates.
 
+When authorized backfills or other commands are queued, the optional
+`--preserve-queued-work` upgrade mode additionally requires
+`--preserve-existing-video` and exact prior upgrade proof. It refuses running
+commands/history scans, direct transfers and active ASMarr client downloads;
+wait for a safe boundary, never cancel monitoring to satisfy the gate.
+Before touching production, a real isolated candidate boot must prove its
+maintenance hold leaves synthetic queued work/checkpoints unchanged. During
+validation, the replacement worker remains held and exact queued rows, schedules,
+configuration, media and Plex state are checked.
+
+Pre-release failures keep the service stopped with an explicit persistent startup
+review guard. Do not remove that guard, create its approval marker or retry an
+upgrade blindly: inspect the protected failure report first. Once normal work has
+been released, an uncertain health check is reported as unverified; it must not
+automatically interrupt newly started work or roll its application back.
+
 After an update verify login/HTTPS, creator and task settings, normal discovery,
 backup/off-host copy, queue work, and Plex/playlists. An application rollback must
 not blindly overwrite the live database or media with older copies.

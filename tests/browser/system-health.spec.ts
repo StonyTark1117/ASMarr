@@ -1,9 +1,9 @@
 import { test, expect, Page } from "@playwright/test";
 
-async function dashboard(page: Page, variant: "healthy" | "attention" | "empty" | "error") {
+async function dashboard(page: Page, variant: "healthy" | "attention" | "empty" | "error" | "held") {
   const now = new Date().toISOString();
   const disk = { available: 100 * 1024 ** 3, total: 200 * 1024 ** 3 };
-  const status = { mode: "production", counts: [], creators: [{count: 2}], sources: [{count: 1}],
+  const status = { mode: "production", maintenanceHeld: variant === "held", counts: [], creators: [{count: 2}], sources: [{count: 1}],
     disk, videoDisk: variant === "attention" ? {...disk, available: 1024 ** 3} : disk,
     mediaCounts: [{media_kind: "Audio", state: "wanted", count: 2},
       {media_kind: "Video", state: "queued", count: 3},
@@ -72,4 +72,10 @@ test("System Health fails visibly when its checks cannot be loaded", async ({pag
   await expect(tile.getByText("Unavailable", {exact: true})).toBeVisible();
   await expect(tile.getByRole("status")).toContainText("could not be loaded");
   await expect(tile.getByText("Healthy", {exact: true})).toHaveCount(0);
+});
+
+test("System Health does not claim healthy while provider work is held", async ({page}) => {
+  const tile = await dashboard(page, "held");
+  await expect(tile.getByText("Needs attention", {exact: true})).toBeVisible();
+  await expect(tile.getByText(/Provider work is held/)).toBeVisible();
 });

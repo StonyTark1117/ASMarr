@@ -24,6 +24,9 @@ reference/
 **/backup-recipient.pem
 **/recovery-key.pem
 **/recovery-cert.pem
+**/ca-key.pem
+**/id_ed25519
+**/id_rsa
 *.cms
 **/sshforcodex
 **/sshpass

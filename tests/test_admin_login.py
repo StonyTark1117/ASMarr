@@ -145,7 +145,7 @@ class AdminLoginTests(unittest.TestCase):
 class GitCredentialHygieneTests(unittest.TestCase):
     def test_runtime_secrets_and_backups_are_ignored_even_inside_subdirectories(self):
         names = ['auth.json', 'initial-admin.txt', 'integrations.json', 'source-secrets.json',
-                 'tls.key', 'sshforcodex', 'sshpass', 'sshpass.txt', '.env', '.env.local',
+                 'tls.key', 'ca-key.pem', 'recovery-key.pem', 'id_ed25519', 'id_rsa', 'sshforcodex', 'sshpass', 'sshpass.txt', '.env', '.env.local',
                  '.auth-reset-random', 'asmarr-rollout-backups/snapshot.json']
         paths = [prefix + name for prefix in ('', 'nested/') for name in names]
         ignored = subprocess.check_output(['git', 'check-ignore', '--no-index', '--stdin'],

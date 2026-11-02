@@ -5,7 +5,7 @@ export default defineConfig({
   workers: 1,
   reporter: "line",
   timeout: 30000,
-  use: { baseURL: "https://127.0.0.1:8789", ignoreHTTPSErrors: true },
+  use: { baseURL: "https://127.0.0.1:8789", ignoreHTTPSErrors: true, trace: "retain-on-failure", screenshot: "only-on-failure" },
   webServer: {
     command: "python3 start_fixture.py",
     url: "https://127.0.0.1:8789/healthz",

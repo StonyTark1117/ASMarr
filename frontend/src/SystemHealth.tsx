@@ -62,8 +62,9 @@ export default function SystemHealth({ status, tick, read, open }: {
     .reduce((total, m) => total + Number(m.count), 0);
   const failures = count("Audio", ["failed"]) + count("Video", ["failed"]);
   const commandFailures = snapshot?.health.failedCommands.length ?? 0;
+  const held = status.maintenanceHeld === true || status.recoveryHeld === true;
   const attention = !!snapshot && (!databaseOk || sourceIssues.length > 0 || lowSpace ||
-    failures > 0 || commandFailures > 0 || enabled < tasks.length || backupStale);
+    failures > 0 || commandFailures > 0 || enabled < tasks.length || backupStale || held);
   const incomplete = !sources.length || !tasks.length || !Number.isFinite(backupTime) ||
     !encrypted || !disksKnown || !knownReserve || !mediaKnown;
   const label = failed ? "Unavailable" : !snapshot ? "Loading" : attention ? "Needs attention" : incomplete ? "Checks incomplete" : "Healthy";
@@ -84,6 +85,7 @@ export default function SystemHealth({ status, tick, read, open }: {
         <div><dt>Last successful backup</dt><dd>{date(backup?.last_run)}<small>{!Number.isFinite(backupTime) ? "No completed backup recorded" : encrypted ? "Encrypted recovery bundle" : "Full encrypted recovery not verified"}{backupStale ? " · Overdue" : ""}</small></dd></div>
       </dl>
       {commandFailures > 0 && <p className="health-warning">{commandFailures} recent command failures in history. Review System Health for details.</p>}
+      {held && <p className="health-warning">Provider work is held for maintenance or recovery. Scheduled work will not run until the operator releases the hold.</p>}
       <p className="muted">Source results reflect their last checks. Off-host backup copies are verified separately.</p>
     </>}
     <div className="health-actions">
