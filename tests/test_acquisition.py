@@ -42,6 +42,41 @@ class AcquisitionTests(unittest.TestCase):
         path=path or self.downloads/'audio.m4a'
         subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=220:duration=1','-c:a','aac','-y',str(path)],check=True)
         return path
+    def youtube_acquisition(self, *, enabled=True, legacy_channels=(), actual_channel=None):
+        channel='UC'+'a'*22
+        self.db.execute('CREATE TABLE identities(id INTEGER PRIMARY KEY,creator_id INTEGER,kind TEXT,handle TEXT,enabled INTEGER)')
+        self.db.execute('INSERT INTO identities VALUES(1,1,?,?,?)',('youtube',channel,int(enabled)))
+        self.db.execute('UPDATE assets SET targets=? WHERE key=?',(json.dumps([['youtube','https://www.youtube.com/watch?v=abcdefghijk']]),self.key))
+        cfg=dict(self.cfg,youtube_enabled=True,youtube_channels=list(legacy_channels))
+        info={'id':'abcdefghijk','channel_id':actual_channel or channel,'title':'ASMR sleep',
+              'duration':600,'availability':'public','age_limit':0}
+        source=self.audio()
+        def transport(asset,effective,http):
+            _,owner=s.youtube.metadata('https://www.youtube.com/watch?v=abcdefghijk',effective)
+            if owner['creator']!=asset['creator']:raise s.MediaError('youtube_creator_mismatch')
+            return source,'https://www.youtube.com/watch?v=abcdefghijk'
+        with patch.object(s,'require_mount'),patch.object(s.youtube,'run_json',return_value=info),patch.object(s,'save_asset',side_effect=transport):
+            result=b.acquire(self.db,cfg,self.key)
+        return result,cfg
+
+    def test_audio_acquisition_approves_current_gui_linked_youtube_identity(self):
+        result,cfg=self.youtube_acquisition()
+        self.assertEqual('complete',result['status'])
+        self.assertEqual([],cfg['youtube_channels'],'Runtime approval must not rewrite protected source configuration')
+
+    def test_disabled_youtube_identity_cannot_be_reapproved_by_legacy_configuration(self):
+        with self.assertRaisesRegex(s.youtube.YouTubeError,'youtube_channel_not_approved'):
+            self.youtube_acquisition(enabled=False,legacy_channels=[{'creator':'Creator','channel_id':'UC'+'a'*22}])
+
+    def test_another_creators_configured_channel_cannot_be_used_for_this_creator(self):
+        with self.assertRaisesRegex(s.youtube.YouTubeError,'youtube_channel_not_approved'):
+            self.youtube_acquisition(actual_channel='UC'+'b'*22,legacy_channels=[{'creator':'Other','channel_id':'UC'+'b'*22}])
+
+    def test_removed_identity_exclusion_cannot_be_bypassed_by_audio_acquisition(self):
+        self.db.execute('CREATE TABLE creator_exclusions(name TEXT,aliases TEXT,identities TEXT,removed INTEGER)')
+        self.db.execute('INSERT INTO creator_exclusions VALUES(?,?,?,0)',('Removed fixture','[]',json.dumps([{'kind':'youtube','handle':'UC'+'a'*22}])))
+        with self.assertRaisesRegex(s.youtube.YouTubeError,'youtube_channel_not_approved'):
+            self.youtube_acquisition(legacy_channels=[{'creator':'Creator','channel_id':'UC'+'a'*22}])
     def test_shadow_cycle_release_identity_comes_from_runtime_manifest(self):
         identity=self.root/'deployed-release-runtime.json'
         identity.write_text(json.dumps({'sourceCommit':'a'*40,'artifactSha256':'b'*64}))

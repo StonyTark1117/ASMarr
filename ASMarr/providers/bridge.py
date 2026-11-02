@@ -466,6 +466,17 @@ def acquire(db,cfg,key):
         return {'status':'already_imported','path':str(s)}
     rules=profile(db,row)
     effective=dict(cfg,naming_template=setting(db,'naming'),minimum_duration=rules.get('minimumDuration',0),allowed_formats=rules.get('allowedFormats',sorted(ALLOWED)))
+    # GUI-linked identities are the live approval authority, not the immutable
+    # legacy YAML channel list. Scope approval to this creator; disabled or
+    # excluded identities must never be resurrected by old configuration.
+    effective['youtube_channels']=[]
+    if has_table(db,'identities'):
+        for identity in db.execute('''SELECT i.handle,c.name FROM identities i
+                JOIN creators c ON c.id=i.creator_id
+                WHERE i.kind='youtube' AND i.enabled=1 AND c.monitored=1 AND c.name=?
+                ORDER BY i.id''',(row['creator'],)):
+            if not creator_removal.excluded(db,identity['name'],[('youtube',identity['handle'])]):
+                effective['youtube_channels'].append({'creator':identity['name'],'channel_id':identity['handle']})
     priorities=rules.get('sourcePriorities',['soundgasm','youtube','reddit'])
     asset=dict(row);asset['targets']=json.dumps(sorted(json.loads(row['targets']),key=lambda t:priorities.index(t[0]) if t[0] in priorities else len(priorities)))
     out,url=core.save_asset(asset,effective,core.HTTP())

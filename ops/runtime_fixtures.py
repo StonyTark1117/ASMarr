@@ -97,9 +97,15 @@ def verify(root, application, deployment, include_video=False, include_removal=F
     selected = TESTS
     if include_video:
         import test_video
+        import test_acquisition
         selected += tuple('test_video.VideoTests.' + name
                           for name in loader.getTestCaseNames(test_video.VideoTests))
-        selected += ('test_acquisition.AcquisitionTests.test_video_master_derivation_tags_audio_and_records_correct_provenance',)
+        # Exercise the whole current acquisition lifecycle, including DB-linked
+        # source approval, against the installed providers. Keep the historical
+        # six-test base stable so prior upgrade proofs remain independently valid.
+        selected += tuple('test_acquisition.AcquisitionTests.' + name
+                          for name in loader.getTestCaseNames(test_acquisition.AcquisitionTests)
+                          if 'test_acquisition.AcquisitionTests.' + name not in selected)
     if include_removal:
         import test_creator_removal
         for cls in (test_creator_removal.CreatorRemovalTests,test_creator_removal.PlexRemovalTests):
