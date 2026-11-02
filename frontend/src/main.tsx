@@ -25,6 +25,7 @@ import {
   Download,
   Clock,
   Clapperboard,
+  Trash2,
 } from "lucide-react";
 import "./style.css";
 
@@ -135,6 +136,7 @@ function App() {
     [sourcePanel, setSourcePanel] = useState<Row | null>(null),
     [sourceForm, setSourceForm] = useState(""),
     [addingCreator, setAddingCreator] = useState(false),
+    [removingCreator, setRemovingCreator] = useState<number | null>(null),
     [integration, setIntegration] = useState("prowlarr");
   const activePage = useRef("Dashboard");
   const creatorRequest = useRef(0);
@@ -196,6 +198,8 @@ function App() {
                 ? "settings"
                 : tab === "Integrations"
                   ? "integrations"
+                  : tab === "Removed creators"
+                    ? "creator-exclusions"
                   : "auth",
         System:
           tab === "Status"
@@ -840,6 +844,9 @@ function App() {
                 <div className="section-heading">
                   <h2>Linked identities</h2>
                   <div className="monitor-controls">
+                    <button className="danger-outline" onClick={() => setRemovingCreator(creator.creator.id)}>
+                      <Trash2 size={15} /> Remove creator…
+                    </button>
                     <label className="switch-label">
                       <input
                         aria-label="Monitored"
@@ -1691,6 +1698,7 @@ function App() {
                   "Video",
                   "Integrations",
                   "Authentication",
+                  "Removed creators",
                 ].map((t) => (
                   <button
                     className={tab === t ? "active" : ""}
@@ -2211,6 +2219,22 @@ function App() {
                     <button className="primary">Save configuration</button>
                   </form>
                 </section>
+              ) : tab === "Removed creators" ? (
+                <section className="panel">
+                  <h2>Removed creators</h2>
+                  <p className="muted">These creators and their linked identities are excluded from discovery. Allowing re-addition does not restore a creator by itself. Add the creator again to reconnect retained recordings without downloading them again.</p>
+                  {Array.isArray(data) && data.length ? data.map((entry: Row) => (
+                    <div className="source-row" key={entry.name}>
+                      <b>{entry.name}</b><span>Removed {when(entry.removed)}</span>
+                      <button onClick={async () => {
+                        if (window.confirm(`Allow ${entry.name} to be added or discovered again?`)) {
+                          await act("creator-exclusions/" + encodeURIComponent(entry.name), "DELETE");
+                          setTick(n => n + 1);
+                        }
+                      }}>Allow re-addition</button>
+                    </div>
+                  )) : <Empty text="No creators are excluded from re-addition." />}
+                </section>
               ) : (
                 <section className="panel">
                   <h2>Administrator password</h2>
@@ -2472,6 +2496,10 @@ function App() {
           <span className="footer-right">v0.2.0</span>
         </footer>
       </div>
+      {removingCreator !== null && <CreatorRemovalDialog creatorId={removingCreator} onClose={(removed) => {
+        setRemovingCreator(null);
+        if (removed) { navigate("Creators"); setTick(n => n + 1); }
+      }} />}
       {toast && (
         <div className="toast">
           <Check size={17} />
@@ -2480,6 +2508,75 @@ function App() {
       )}
     </div>
   );
+}
+function CreatorRemovalDialog({ creatorId, onClose }: { creatorId: number; onClose: (removed: boolean) => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [plan, setPlan] = useState<Row | null>(null);
+  const [deleteFiles, setDeleteFiles] = useState(false);
+  const [preventReadd, setPreventReadd] = useState(true);
+  const [confirmation, setConfirmation] = useState("");
+  const [commandId, setCommandId] = useState("");
+  const [result, setResult] = useState<Row | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = () => {
+    setError(""); setPlan(null);
+    api(`creators/${creatorId}/removal-preview`).then(setPlan).catch(e => setError(e.message));
+  };
+  useEffect(() => { dialog.current?.showModal(); load(); }, [creatorId]);
+  useEffect(() => {
+    if (!commandId) return;
+    let current = true;
+    const poll = async () => {
+      try {
+        const command = await api("commands/" + commandId);
+        if (!current) return;
+        if (command.state === "completed") { setResult(JSON.parse(command.result)); setBusy(false); }
+        else if (["failed", "interrupted", "cancelled"].includes(command.state)) {
+          setError(command.error || "Removal interrupted. Review System tasks and refresh the preview before retrying.");
+          setBusy(false); setCommandId("");
+        }
+      } catch (e) { if (current) setError((e as Error).message); }
+    };
+    poll(); const timer = setInterval(poll, 1500);
+    return () => { current = false; clearInterval(timer); };
+  }, [commandId]);
+  const submit = async () => {
+    setBusy(true); setError("");
+    try {
+      const queued = await api(`creators/${creatorId}/remove`, "POST", { deleteFiles, preventReadd, confirmation, planToken: plan?.planToken });
+      setCommandId(queued.id);
+    } catch (e) { setError((e as Error).message); setBusy(false); }
+  };
+  return <dialog ref={dialog} className="removal-dialog" aria-labelledby="remove-creator-title" onCancel={e => { e.preventDefault(); if (!busy) onClose(!!result); }}>
+    <h2 id="remove-creator-title">{result ? "Creator removed" : "Remove creator"}{plan ? `: ${plan.name}` : ""}</h2>
+    {error && <p role="alert" className="removal-warning">{error}</p>}
+    {result ? <>
+      <p>{result.deleted.length} files deleted · {result.preserved.length} files kept. {result.preventReadd ? "Automatic re-addition is blocked." : "Automatic re-addition is allowed."}</p>
+      {!!result.alreadyMissing?.length && <p>{result.alreadyMissing.length} tracked files were already missing; stale file associations were cleared.</p>}
+      <p>Plex: {result.plex?.status?.replaceAll("_", " ")}. Download-client originals were kept.</p>
+      {!!result.warnings?.length && <div role="alert"><h3>Files not deleted</h3><ul>{result.warnings.map((w: Row) => <li key={w.path}><code>{w.path}</code>: {w.reason.replaceAll("_", " ")}</li>)}</ul></div>}
+      {result.plex?.status === "cleanup_pending" && <p role="alert">Plex cleanup needs attention. No global trash was emptied or unrelated metadata changed. See this removal's result in System → Tasks.</p>}
+      <button className="primary" onClick={() => onClose(true)}>Done</button>
+    </> : plan ? <>
+      <p>{plan.recordings} recordings · {plan.files.length} tracked files · {(plan.bytes / 1048576).toFixed(1)} MB eligible for deletion</p>
+      <fieldset disabled={busy}>
+        <legend>What should happen to the files?</legend>
+        <label className="removal-choice"><input type="radio" name="remove-files" checked={!deleteFiles} onChange={() => setDeleteFiles(false)} />
+          <span><b>Remove creator, keep files</b><small>Stop managing this creator. Files and Plex entries stay untouched.</small></span></label>
+        <label className="removal-choice"><input type="radio" name="remove-files" checked={deleteFiles} onChange={() => setDeleteFiles(true)} />
+          <span><b>Remove creator and delete files</b><small>Delete only the tracked library files listed below. This cannot be undone.</small></span></label>
+        <label className="removal-choice"><input type="checkbox" checked={preventReadd} onChange={e => setPreventReadd(e.target.checked)} /> Prevent automatic re-addition</label>
+        <p className="muted">This waits for active provider work to finish, then stops this creator's queued work. Shared files, folders, untracked files and download-client originals are never deleted. Exclusions can be reversed in Settings → Removed creators.</p>
+        <details><summary>Review affected paths ({plan.files.length})</summary><ul className="removal-paths">{plan.files.map((f: Row) => <li key={f.path}><code>{f.path}</code> — {f.status.replaceAll("_", " ")}</li>)}</ul></details>
+        {deleteFiles && <label>Type <b>{plan.name}</b> to confirm file deletion<input aria-label="Confirm creator name" value={confirmation} onChange={e => setConfirmation(e.target.value)} autoComplete="off" /></label>}
+      </fieldset>
+      {busy && <p role="status">Removal queued or running. Waiting for active work to finish; keep this dialog open.</p>}
+      <div className="removal-actions"><button onClick={() => onClose(busy)}>{busy ? "Close; continue in background" : "Cancel"}</button>
+        {error && <button disabled={busy} onClick={load}>Refresh preview</button>}
+        <button className={deleteFiles ? "danger" : "primary"} disabled={busy || !!error || (deleteFiles && confirmation !== plan.name)} onClick={submit}>{deleteFiles ? "Remove and delete files" : "Remove creator, keep files"}</button></div>
+    </> : <><p>Loading removal preview…</p><button onClick={() => onClose(false)}>Cancel</button>{error && <button onClick={load}>Retry preview</button>}</>}
+  </dialog>;
 }
 function CommandList({ tick }: { tick: number }) {
   const [rows, setRows] = useState<Row[]>([]);

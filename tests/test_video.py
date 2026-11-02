@@ -37,6 +37,14 @@ CREATE TABLE backfill_jobs(id TEXT PRIMARY KEY,creator_id INTEGER,media_kind TEX
 
 
 class VideoTests(unittest.TestCase):
+    def test_background_backfill_cannot_undo_suppression_or_cancellation(self):
+        v.ensure_asset_rows(self.db,'recording',video_wanted=True)
+        for state in ('suppressed','cancelled'):
+            self.db.execute("UPDATE media_assets SET state=?,wanted=0 WHERE media_kind='Video'",(state,))
+            v.ensure_asset_rows(self.db,'recording',video_wanted=True)
+            row=self.db.execute("SELECT state,wanted FROM media_assets WHERE media_kind='Video'").fetchone()
+            self.assertEqual((state,0),tuple(row))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
         self.audio = self.root / 'audio'; self.video = self.root / 'video'; self.downloads = self.root / 'downloads'

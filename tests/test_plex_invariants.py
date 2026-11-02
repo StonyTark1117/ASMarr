@@ -1,4 +1,5 @@
 import copy
+import json
 import importlib.util
 from pathlib import Path
 import unittest
@@ -68,6 +69,33 @@ class PlexInvariantTests(unittest.TestCase):
     def test_added_unlocked_field_is_semantically_equivalent_to_absent_field(self):
         E.SubElement(self.plex.tracks['2'],'Field',name='mood',locked='0')
         self.assertTrue(self.compare()['passed'])
+
+    def with_video(self):
+        self.cfg['plex']['video']={'section_id':5}
+        self.video=E.fromstring('<Video ratingKey="80" librarySectionID="5" title="Video" viewCount="3" viewOffset="20"><Media><Part file="/video/kept.mkv"/></Media><Field name="title" locked="1"/><Genre tag="User tag"/></Video>')
+        original=self.plex.call
+        def call(method,path,**kwargs):
+            if path in ('/library/sections/5/all','/library/metadata/80'):
+                self.assertEqual('GET',method)
+                root=E.Element('MediaContainer',size='1');root.append(copy.deepcopy(self.video));return root
+            return original(method,path,**kwargs)
+        self.plex.call=call
+
+    def test_video_preservation_is_readonly_and_survives_evidence_json_roundtrip(self):
+        self.with_video()
+        before=json.loads(json.dumps(audit.capture(self.cfg,{}, {},self.plex,True)))
+        result=audit.compare(before,audit.capture(self.cfg,{}, {},self.plex,True))
+        self.assertTrue(result['passed']);self.assertEqual(1,result['existingVideosChecked'])
+        self.assertEqual([],self.plex.writes)
+
+    def test_video_playback_locks_tags_and_paths_require_exact_preservation(self):
+        self.with_video()
+        before=audit.capture(self.cfg,{}, {},self.plex,True)
+        original=copy.deepcopy(self.video)
+        for mutate in (lambda v:v.set('viewOffset','0'),lambda v:v.find('Field').set('locked','0'),
+                       lambda v:v.find('Genre').set('tag','Changed'),lambda v:v.find('.//Part').set('file','/video/changed.mkv')):
+            self.video=copy.deepcopy(original);mutate(self.video)
+            self.assertFalse(audit.compare(before,audit.capture(self.cfg,{}, {},self.plex,True))['passed'])
 
 
 if __name__=='__main__':unittest.main()

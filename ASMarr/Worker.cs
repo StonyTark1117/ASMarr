@@ -81,6 +81,7 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
                 "search" => await providers.Run("search",args.RootElement,timeout.Token),
                 "grab" => await providers.Run("grab",args.RootElement,timeout.Token),
                 "manual-import" => await providers.Run("manual-import",args.RootElement,timeout.Token),
+                "creator-remove" => await providers.Run("creator-remove",args.RootElement,timeout.Token),
                 "rename-preview" => await providers.Run("rename-preview",args.RootElement,timeout.Token),
                 "integration-test" => await providers.Run("integration-test",args.RootElement,timeout.Token),
                 _ => throw new InvalidOperationException("Unsupported command")

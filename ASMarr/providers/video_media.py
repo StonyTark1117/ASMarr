@@ -179,8 +179,8 @@ def ensure_asset_rows(db, recording_key, *, video_wanted=False, source_url=None,
         db.execute('''INSERT INTO media_assets(recording_key,media_kind,wanted,state,source_url,provider_id)
                       VALUES (?,'Video',1,'wanted',?,?)
                       ON CONFLICT(recording_key,media_kind) DO UPDATE SET
-                      wanted=CASE WHEN media_assets.state='imported' THEN media_assets.wanted ELSE 1 END,
-                      state=CASE WHEN media_assets.state IN ('imported','downloading') THEN media_assets.state ELSE 'wanted' END,
+                      wanted=CASE WHEN media_assets.state IN ('imported','suppressed','cancelled') THEN media_assets.wanted ELSE 1 END,
+                      state=CASE WHEN media_assets.state IN ('imported','downloading','suppressed','cancelled') THEN media_assets.state ELSE 'wanted' END,
                       source_url=COALESCE(excluded.source_url,media_assets.source_url),
                       provider_id=COALESCE(excluded.provider_id,media_assets.provider_id),error=NULL''',
                    (recording_key, source_url, provider_id))
@@ -593,8 +593,9 @@ def _meta_set(db, key, value):
 
 def scan_library(db, cfg):
     """Reconcile externally changed paths without moving or deleting any media."""
-    rows = db.execute("""SELECT * FROM media_assets WHERE media_kind='Video'
-                         AND state IN ('imported','missing') AND saved_path IS NOT NULL""").fetchall()
+    rows = db.execute("""SELECT m.* FROM media_assets m WHERE m.media_kind='Video'
+                         AND m.state IN ('imported','missing') AND m.saved_path IS NOT NULL
+                         AND EXISTS(SELECT 1 FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=m.recording_key)""").fetchall()
     if not rows:
         return {'status': 'not_needed', 'changes': []}
     validate_roots(cfg['output_root'], cfg['video_root'])

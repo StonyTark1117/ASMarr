@@ -130,6 +130,45 @@ and SFW qualification safeguards.
 
 ## Rollout requirements
 
+### Removing creators
+
+Open a creator and choose **Remove creator…**. The reviewed dialog defaults to
+**keep files** and **prevent automatic re-addition**. It shows recording/file
+counts, deletable size, and every tracked path. Keeping files leaves Plex alone
+and retains recording associations privately for reconnection when the same
+creator is explicitly re-added. The removed creator's recordings no longer
+appear in the active library. Settings → Removed creators → Allow re-addition
+reverses a discovery exclusion (including linked handles and aliases).
+
+**Remove creator and delete files** requires the exact creator name and deletes
+only individually tracked files inside their respective audio/video library
+roots. No folders, untracked artwork, shared/hardlinked files, or download-client
+originals are deleted. Unsafe paths and failed deletions are reported. The
+operation is durable, runs under the global provider lease after current work
+finishes, cancels creator-scoped queued work, and disables monitoring before
+filesystem changes. A changed preview must be reviewed again. An interrupted
+removal leaves the creator unmonitored and its command visible for review.
+
+After file deletion, Plex cleanup targets only exact metadata entries whose
+entire set of files was deleted by that operation. It never empties library
+trash, changes server deletion policy, edits other creators' metadata, or alters
+playlists. If Plex refuses cleanup, the result explicitly reports it as pending.
+File deletion is irreversible; ordinary protected rollout backups do not copy
+the media library.
+
+### Production upgrades
+
+After video enrollment, a follow-up upgrade additionally requires
+`--preserve-existing-video --prior-upgrade-proof <exact-current-release-proof>`.
+This checks full video rows/candidates/backfills, creator/identity/settings/client
+queue state, video content hashes and artwork inventory, and protected config
+including authentication. Resumable backfills and active transfer jobs block the
+upgrade. Use `--include-removal-tests` for a release containing creator removal;
+installed offline fixtures then exercise both removal choices and file/Plex
+safety in addition to the audio/video lifecycle. These switches do not enable
+creators or approve new acquisitions. Exact successful CI and pre/post upgrade
+preservation remain mandatory, with saved task state restored on success.
+
 For the first video release after audio production acceptance,
 `ops/production_upgrade.py` provides a separate production upgrade path. It
 requires the exact green release CI, a matching immutable fixture bundle, an

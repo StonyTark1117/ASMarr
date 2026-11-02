@@ -1164,3 +1164,27 @@ footer > span {
 .backfill-progress progress {
   width: 100%;
 }
+.removal-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 28px;
+  border: 1px solid #354153;
+  border-radius: 16px;
+  color: #e6eaf1;
+  background: #19212c;
+}
+.removal-dialog::backdrop { background: rgb(10 30 26 / 55%); }
+.removal-dialog fieldset { border: 0; padding: 0; margin: 20px 0; }
+.removal-dialog legend { font-weight: 600; margin-bottom: 12px; }
+.removal-dialog label, .removal-dialog small, .removal-dialog .muted { color: #aebed2; }
+.removal-dialog b { color: #e6eaf1; }
+.removal-dialog .removal-choice { display: flex; flex-direction: row; align-items: start; gap: 12px; margin: 14px 0; }
+.removal-choice input { width: auto; margin-top: 4px; }
+.removal-choice small { display: block; margin-top: 5px; }
+.removal-paths { max-height: 180px; overflow: auto; padding-left: 20px; }
+.removal-paths code { overflow-wrap: anywhere; }
+.removal-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: end; margin-top: 20px; }
+.danger, .danger-outline { border: 1px solid #d46b6b; color: #f0aaaa; }
+.danger { background: #ae3434; color: white; }
+.removal-warning { color: #f0aaaa; overflow-wrap: anywhere; }

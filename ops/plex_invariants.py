@@ -16,7 +16,7 @@ LOCK_ATTRIBUTES={'artist':'grandparentTitle','albumartist':'grandparentTitle',
                  'album':'parentTitle','sorttitle':'titleSort'}
 
 
-def capture(cfg,secrets,registry,client=None):
+def capture(cfg,secrets,registry,client=None,include_video=False):
     import plex_playlists as plex
     from categories import CATEGORIES
     client=client or plex.Client(cfg,secrets)
@@ -43,6 +43,22 @@ def capture(cfg,secrets,registry,client=None):
         key=playlist.get('ratingKey')
         fields=('guid',) if key in managed_ids else ('guid','title','summary','smart','content')
         result['playlists'][key]={name:playlist.get(name) for name in fields}
+    if include_video:
+        video_section=cfg.get('plex',{}).get('video',{}).get('section_id')
+        if video_section is None or not str(video_section).isdigit():raise ValueError('video_preservation_section_required')
+        result['videoSection']=str(video_section);result['videos']={}
+        catalog=plex.all_items(client,'/library/sections/'+str(video_section)+'/all','Video')
+        for item in catalog:
+            key=item.get('ratingKey')
+            if not key or not key.isdigit():raise ValueError('video_preservation_invalid_identity')
+            details=client.call('GET','/library/metadata/'+key,includeFields=1).findall('Video')
+            if len(details)!=1 or details[0].get('ratingKey')!=key or details[0].get('librarySectionID')!=str(video_section):
+                raise ValueError('video_preservation_identity_mismatch')
+            video=details[0]
+            result['videos'][key]={'attributes':dict(video.attrib),
+                                  'parts':[dict(part.attrib) for part in video.findall('.//Part')],
+                                  'fields':[dict(field.attrib) for field in video.findall('Field')],
+                                  'tags':sorted([{'type':child.tag,'attributes':dict(child.attrib)} for child in video if child.get('tag') is not None],key=lambda value:json.dumps(value,sort_keys=True))}
     return result
 
 
@@ -62,19 +78,24 @@ def compare(before,after):
         current=after['playlists'].get(key)
         if current is None or any(current.get(name)!=value for name,value in original.items()):
             changes.append({'kind':'playlist_identity_or_metadata_changed','ratingKey':key})
+    if 'videos' in before:
+        if before.get('videoSection')!=after.get('videoSection'):changes.append({'kind':'video_section_changed'})
+        for key,original in before['videos'].items():
+            if after.get('videos',{}).get(key)!=original:changes.append({'kind':'video_identity_or_metadata_changed','ratingKey':key})
     return {'passed':not changes,'baselineAt':before['capturedAt'],'checkedAt':after['capturedAt'],
             'existingTracksChecked':len(before['tracks']),'existingPlaylistsChecked':len(before['playlists']),
-            'changes':changes,'newTracks':len(set(after['tracks'])-set(before['tracks']))}
+            'changes':changes,'newTracks':len(set(after['tracks'])-set(before['tracks'])),
+            'existingVideosChecked':len(before.get('videos',{}))}
 
 
-def runtime_snapshot():
+def runtime_snapshot(include_video=False):
     sys.path.insert(0,'/opt/asmarr/providers')
     import bridge
     with sqlite3.connect(bridge.DB.as_uri()+'?mode=ro',uri=True) as db:
         db.row_factory=sqlite3.Row
         cfg,secrets=bridge.configuration(db)
         registry=bridge.core.meta_get(db,'managed_playlists',{})
-    return capture(cfg,secrets,registry)
+    return capture(cfg,secrets,registry,include_video=include_video)
 
 
 def write_protected(path,value):
@@ -89,12 +110,14 @@ def main():
     parser.add_argument('operation',choices=['capture','compare'])
     parser.add_argument('--baseline',type=Path,default=ACCEPTANCE/'plex-before-cutover.json')
     parser.add_argument('--output',type=Path,default=ACCEPTANCE/'plex-preservation.json')
+    parser.add_argument('--include-video',action='store_true')
     args=parser.parse_args()
     if args.operation=='capture':
-        snapshot=runtime_snapshot();write_protected(args.baseline,snapshot)
+        snapshot=runtime_snapshot(args.include_video);write_protected(args.baseline,snapshot)
         print(json.dumps({'evidence':str(args.baseline),'tracks':len(snapshot['tracks']),'playlists':len(snapshot['playlists'])}))
     else:
-        report=compare(json.loads(args.baseline.read_text()),runtime_snapshot())
+        before=json.loads(args.baseline.read_text())
+        report=compare(before,runtime_snapshot(args.include_video or 'videos' in before))
         write_protected(args.output,report)
         print(json.dumps({'evidence':str(args.output),'passed':report['passed'],'changes':len(report['changes'])}))
         if not report['passed']:raise SystemExit(1)

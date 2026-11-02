@@ -26,6 +26,7 @@ import plex_playlists
 import video_media
 import acquisition_profiles
 import source_configuration
+import creator_removal
 from categories import CATEGORIES
 
 STATE = Path(os.environ.get('ASMARR_STATE', '/var/lib/asmarr'))
@@ -200,6 +201,12 @@ def configured_discovery(db,cfg):
     paused_rows=db.execute('SELECT i.kind,i.handle FROM identities i LEFT JOIN creators c ON c.id=i.creator_id WHERE i.enabled=0 OR c.monitored=0').fetchall()
     paused_reddit={r['handle'].casefold() for r in paused_rows if r['kind']=='reddit'}
     paused_soundgasm={r['handle'].casefold() for r in paused_rows if r['kind']=='soundgasm'}
+    for removed in creator_removal.exclusions(db):
+        names={removed['name'].casefold(),*(name.casefold() for name in json.loads(removed['aliases']))}
+        paused_reddit.update(names);paused_soundgasm.update(names)
+        for identity in json.loads(removed['identities']):
+            if identity['kind']=='reddit':paused_reddit.add(identity['handle'].casefold())
+            if identity['kind']=='soundgasm':paused_soundgasm.add(identity['handle'].casefold())
     cfg['allowlist']=list(dict.fromkeys([name for name in cfg.get('allowlist',[]) if name.casefold() not in paused_reddit]+[r['handle'] for r in identities if r['kind']=='reddit' and r['profile_id']!=3]))
     sfw_handles={c['soundgasm'].casefold() for c in cfg.get('sfw_expansion',{}).get('creators',[])}|{c['soundgasm'].casefold() for c in core.meta_get(db,'sfw_auto_creators',{}).values()}
     cfg['soundgasm_creators']=list(dict.fromkeys([name for name in cfg.get('soundgasm_creators',[]) if name.casefold() not in paused_soundgasm]+[r['handle'] for r in identities if r['kind']=='soundgasm' and r['handle'].casefold() not in sfw_handles]))
@@ -274,6 +281,8 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
         return options
     core.targets=discovery_targets
     def monitored_enqueue(conn,sid,source,creator,title,options,published=0):
+        source_kind,_,source_handle=source.partition(':')
+        if creator_removal.excluded(conn,creator,[(source_kind,source_handle)]):return 'creator_removed'
         if creator not in monitored:
             configured=set(active.get('allowlist',[]))|set(active.get('soundgasm_creators',[]))
             automatic=core.meta_get(conn,'sfw_auto_creators',{})
@@ -691,6 +700,9 @@ def process_queue(db,cfg):
 
 def dispatch(operation,args):
     with contextlib.closing(connect()) as db:
+        if operation=='creator-removal-preview':
+            # Preview needs library roots only, not source/API credentials.
+            return creator_removal.preview(db,{'output_root':setting(db,'root'), 'video_root':setting(db,'video.root')},args['creatorId'])
         if operation in {'source-configuration', 'set-source-configuration'}:
             try:
                 if operation == 'set-source-configuration':
@@ -700,7 +712,13 @@ def dispatch(operation,args):
             except ValueError as error:
                 return {'error': str(error)}
         cfg,secrets=configuration(db)
-        if operation=='migrate': return migrate(db,cfg)
+        if operation=='creator-remove':
+            return creator_removal.remove(db,cfg,args,qbit,lambda paths:creator_removal.cleanup_plex(cfg,secrets,paths))
+        if operation in {'acquire','search','grab','manual-import'} and not db.execute('SELECT 1 FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=?',(args['key'],)).fetchone():
+            raise ValueError('Recording belongs to a removed or missing creator.')
+        if operation=='migrate':
+            if creator_removal.exclusions(db):raise ValueError('Migration would overwrite creator-removal history; review the removal exclusions first.')
+            return migrate(db,cfg)
         if operation=='scan':
             manifest=media_manifest(db); original=core.meta_get(db,'migration_media_manifest',manifest)
             return {'files':len(manifest['files']),'missing':manifest['missing'],'outside':manifest['outside'],'unchanged':all(manifest['files'].get(k)==v for k,v in original['files'].items()),

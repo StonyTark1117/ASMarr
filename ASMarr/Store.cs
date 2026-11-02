@@ -58,6 +58,7 @@ public sealed class Store
         CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY,at TEXT NOT NULL,level TEXT NOT NULL,message TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS shadow_cycles(id INTEGER PRIMARY KEY,started TEXT NOT NULL,finished TEXT,result TEXT NOT NULL,clean INTEGER NOT NULL DEFAULT 0,comparison TEXT NOT NULL DEFAULT '{}');
         CREATE TABLE IF NOT EXISTS migration_audits(id INTEGER PRIMARY KEY,at TEXT NOT NULL,result TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS creator_exclusions(name TEXT PRIMARY KEY COLLATE NOCASE,aliases TEXT NOT NULL DEFAULT '[]',identities TEXT NOT NULL DEFAULT '[]',removed INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS assets_state ON assets(state,retry_after);
         CREATE INDEX IF NOT EXISTS assets_creator ON assets(creator);
         CREATE INDEX IF NOT EXISTS media_assets_state ON media_assets(media_kind,state,retry_after);

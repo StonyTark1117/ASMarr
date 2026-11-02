@@ -1,11 +1,14 @@
-"""Backed-up first video release upgrade of an accepted, video-opted-out instance.
+"""Backed-up production upgrade with explicit existing-video preservation.
 
 This is not cutover approval or live video acceptance. It preserves the original
 audio evidence, verifies the replacement in isolation, and restores scheduling.
 No media, source settings, client configuration, or creator opt-ins are changed.
+Default first-video upgrades still require no video state. Follow-up upgrades
+require explicit opt-in, exact prior certification, and expanded preservation.
 """
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,7 +24,7 @@ import requests
 import urllib3
 from release_integrity import artifact_hash
 from runtime_fixtures import TESTS, verify_fixture_files
-from shadow_deploy import extract_payload, invariants
+from shadow_deploy import extract_payload, invariants as audio_invariants
 
 DB = Path('/var/lib/asmarr/asmarr.db')
 APPLICATION = Path('/opt/asmarr')
@@ -30,6 +33,60 @@ ACCEPTANCE = Path('/var/lib/asmarr/acceptance')
 BACKUPS = Path('/root/asmarr-rollout-backups')
 RUNTIME = DB.parent / 'deployed-release-runtime.json'
 OPS = Path(__file__).resolve().parent
+
+
+def existing_video_state():
+    """Full preservation boundary for upgrades after video enrollment exists."""
+    digest = lambda value: hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    with sqlite3.connect(DB.as_uri()+'?mode=ro',uri=True) as db:
+        tables = ('creators','identities','settings','video_candidates','backfill_jobs','queue','downloads','aliases','creator_exclusions')
+        rows = {}
+        for table in tables:
+            exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone()
+            # The removal migration adds an empty exclusions table; absent and
+            # empty are equivalent, but preexisting exclusions must be retained.
+            rows[table] = sorted(db.execute('SELECT * FROM '+table).fetchall(),key=repr) if exists else []
+        rows['video'] = db.execute("SELECT * FROM media_assets WHERE media_kind='Video' ORDER BY recording_key").fetchall()
+        resumable = db.execute("SELECT count(*) FROM backfill_jobs b JOIN creators c ON c.id=b.creator_id WHERE c.monitor_video=1 AND b.state IN ('queued','running','failed','interrupted')").fetchone()[0]
+        transfers = db.execute("SELECT count(*) FROM queue WHERE state IN ('submitting','downloading','importing')").fetchone()[0]
+        root_row = db.execute("SELECT value FROM settings WHERE key='video.root'").fetchone()
+        root = Path(root_row[0]) if root_row else None
+        media = []
+        for path, state, details in db.execute("SELECT saved_path,state,details FROM media_assets WHERE media_kind='Video' AND saved_path IS NOT NULL"):
+            path = Path(path)
+            if root is None or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+                raise ValueError('preserved_video_outside_library')
+            if not path.is_file():
+                if state == 'imported':raise ValueError('preserved_imported_video_missing')
+                media.append((str(path),'missing'));continue
+            before = path.stat()
+            with path.open('rb') as stream:sha = hashlib.file_digest(stream,'sha256').hexdigest()
+            after = path.stat()
+            if (before.st_size,before.st_mtime_ns,before.st_ino)!=(after.st_size,after.st_mtime_ns,after.st_ino):
+                raise ValueError('preserved_video_changed_during_audit')
+            expected = json.loads(details or '{}').get('asmarr_file',{}).get('sha256')
+            if expected and expected != sha:raise ValueError('preserved_video_digest_mismatch')
+            media.append((str(path),before.st_size,before.st_mtime_ns,before.st_ino,sha))
+        # Retain artwork/untracked files as well, without following symlinks.
+        inventory = []
+        if root and root.exists():
+            def fail(error):raise error
+            for folder, directories, files in os.walk(root,followlinks=False,onerror=fail):
+                for name in sorted(directories+files):
+                    path=Path(folder)/name;info=path.lstat()
+                    inventory.append((str(path),info.st_mode,info.st_size,info.st_mtime_ns,info.st_ino))
+        configuration = []
+        for path in sorted(CONFIG.rglob('*')):
+            if path.is_symlink():raise ValueError('protected_config_symlink_requires_review')
+            if path.is_file():
+                info=path.stat();configuration.append((str(path.relative_to(CONFIG)),hashlib.sha256(path.read_bytes()).hexdigest(),info.st_mode,info.st_uid,info.st_gid))
+        return {'videoPreservationHash':digest(rows),'videoFilesHash':digest(sorted(media,key=repr)),
+                'videoInventoryHash':digest(sorted(inventory,key=repr)),'protectedConfigHash':digest(configuration),
+                'resumableBackfills':resumable,'activeDownloadJobs':transfers}
+
+
+def invariants():
+    return dict(audio_invariants(), **existing_video_state())
 
 
 def protected_json(path, value, mode=0o600):
@@ -43,10 +100,16 @@ def protected_json(path, value, mode=0o600):
     temporary.replace(path)
 
 
-def validate_baseline(snapshot, release, accepted, installed_hash):
+def validate_baseline(snapshot, release, accepted, installed_hash, preserve_existing_video=False):
     if snapshot['mode'] != 'production' or snapshot['integrity'] != 'ok' or snapshot['activeCommands']:
         raise ValueError('upgrade_requires_healthy_idle_production')
-    if any(snapshot[key] for key in ('videoOptIns','videoAssets','videoCandidates','videoBackfills')):
+    if preserve_existing_video:
+        required=('videoPreservationHash','videoFilesHash','videoInventoryHash','protectedConfigHash')
+        if any(not re.fullmatch('[a-f0-9]{64}',snapshot.get(key,'')) for key in required):
+            raise ValueError('full_video_preservation_boundary_required')
+        if snapshot.get('resumableBackfills') != 0 or snapshot.get('activeDownloadJobs') != 0:
+            raise ValueError('existing_video_must_be_idle_and_not_resumable')
+    elif any(snapshot[key] for key in ('videoOptIns','videoAssets','videoCandidates','videoBackfills')):
         raise ValueError('first_video_upgrade_requires_untouched_video_baseline')
     if (accepted.get('ready') is not True or accepted.get('testedCommit') != release.get('sourceCommit')
             or accepted.get('artifactSha256') != installed_hash
@@ -124,7 +187,7 @@ def prior_certification(path, release):
     return {'ready':True,'testedCommit':prior['sourceCommit'],'artifactSha256':prior['artifactSha256']}
 
 
-def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None):
+def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None, preserve_existing_video=False, include_removal_tests=False):
     if not re.fullmatch('[a-f0-9]{40}', commit) or not re.fullmatch('[a-f0-9]{64}', expected_hash):
         raise ValueError('full_release_identity_required')
     ci = requests.get(f'https://api.github.com/repos/StonyTark1117/ASMarr/actions/runs/{ci_run}', timeout=30)
@@ -135,8 +198,10 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None)
     accepted = json.loads((ACCEPTANCE / 'production-accepted.json').read_text())
     if prior_upgrade:
         accepted = prior_certification(prior_upgrade, release)
+    if preserve_existing_video and not prior_upgrade:
+        raise ValueError('existing_video_requires_exact_prior_upgrade_certification')
     before = invariants()
-    validate_baseline(before, release, accepted, artifact_hash(APPLICATION))
+    validate_baseline(before, release, accepted, artifact_hash(APPLICATION), preserve_existing_video)
     for action, unit, expected in (('is-enabled','asmr-scraper.timer','disabled'),
                                    ('is-active','asmr-scraper.timer','inactive'),
                                    ('is-active','asmr-scraper.service','inactive')):
@@ -175,7 +240,8 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None)
         if invariants() != held:
             raise ValueError('instance_changed_while_stopping')
         baseline = ACCEPTANCE / ('plex-before-video-upgrade-' + stamp + '.json')
-        evidence('plex_invariants.py', 'capture', '--baseline', baseline)
+        plex_extra=('--include-video',) if preserve_existing_video else ()
+        evidence('plex_invariants.py', 'capture', '--baseline', baseline, *plex_extra)
         APPLICATION.rename(backup / 'application'); moved = True
         stage.rename(APPLICATION)
         proposed.update(deployedAt=dt.datetime.now(dt.timezone.utc).isoformat(), mode='production',
@@ -189,11 +255,12 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None)
         if invariants() != held or artifact_hash(APPLICATION) != expected_hash:
             raise ValueError('replacement_changed_preserved_state')
         runtime = ACCEPTANCE / ('runtime-video-upgrade-' + stamp + '.json')
-        evidence('runtime_fixtures.py', 'verify', '--fixtures', fixtures, '--include-video', '--output', runtime)
+        extra=('--include-removal',) if include_removal_tests else ()
+        evidence('runtime_fixtures.py', 'verify', '--fixtures', fixtures, '--include-video', *extra, '--output', runtime)
         if json.loads(runtime.read_text()).get('passed') is not True:
             raise ValueError('installed_runtime_fixtures_failed')
         preservation = ACCEPTANCE / ('plex-video-upgrade-' + stamp + '.json')
-        evidence('plex_invariants.py', 'compare', '--baseline', baseline, '--output', preservation)
+        evidence('plex_invariants.py', 'compare', '--baseline', baseline, '--output', preservation, *plex_extra)
         if json.loads(preservation.read_text()).get('passed') is not True or invariants() != held:
             raise ValueError('upgrade_preservation_failed')
         # Stop before restoring the saved schedule so overdue tasks cannot race
@@ -207,6 +274,8 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None)
         report = dict(proposed, ready=True, scope='production upgrade; live video acceptance still required',
                       runtimeEvidence=str(runtime), plexPreservation=str(preservation),
                       originalAudioAcceptancePreserved=True, schedulerRestored=True)
+        report.update(existingVideoPreserved=preserve_existing_video,removalRuntimeTests=include_removal_tests,
+                      preservedBefore=before,preservedAfter=invariants())
         system('start'); healthy()
         protected_json(ACCEPTANCE / ('production-video-upgrade-' + stamp + '.json'), report)
         return report
@@ -240,6 +309,8 @@ if __name__ == '__main__':
     parser.add_argument('--ci-run', type=int, required=True)
     parser.add_argument('--artifact-sha256', required=True)
     parser.add_argument('--prior-upgrade-proof', type=Path)
+    parser.add_argument('--preserve-existing-video', action='store_true')
+    parser.add_argument('--include-removal-tests', action='store_true')
     args = parser.parse_args()
-    result = deploy(args.payload, args.fixtures, args.commit, args.ci_run, args.artifact_sha256, args.prior_upgrade_proof)
+    result = deploy(args.payload, args.fixtures, args.commit, args.ci_run, args.artifact_sha256, args.prior_upgrade_proof, args.preserve_existing_video, args.include_removal_tests)
     print(json.dumps({k:result[k] for k in ('sourceCommit','artifactSha256','backup','scope','schedulerRestored')}))

@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -165,6 +166,87 @@ class ProductionUpgradeTests(unittest.TestCase):
             upgrade.prior_certification('prior.json',self.old)
         with self.assertRaisesRegex(ValueError, 'outside_protected'):
             upgrade.read_protected(self.root/'untrusted.json')
+
+    def test_existing_video_requires_full_boundary_and_zero_resumable_work(self):
+        snapshot=upgrade.invariants()
+        snapshot.update(videoOptIns=1,videoAssets=374,videoCandidates=374,videoBackfills=1,
+                        videoPreservationHash='e'*64,videoFilesHash='e'*64,videoInventoryHash='e'*64,
+                        protectedConfigHash='e'*64,resumableBackfills=0,activeDownloadJobs=0)
+        accepted=dict(self.old,testedCommit='a'*40,ready=True)
+        upgrade.validate_baseline(snapshot,self.old,accepted,'d'*64,True)
+        for change in ({'resumableBackfills':1},{'activeDownloadJobs':1},{'videoFilesHash':''}):
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                upgrade.validate_baseline(dict(snapshot,**change),self.old,accepted,'d'*64,True)
+        with self.assertRaises(ValueError):upgrade.validate_baseline(snapshot,self.old,accepted,'d'*64)
+
+    def test_existing_video_cannot_bypass_exact_prior_certification(self):
+        with self.assertRaisesRegex(ValueError,'exact_prior_upgrade'):
+            upgrade.deploy(self.archive,self.root/'fixtures','b'*40,123,'c'*64,preserve_existing_video=True)
+        self.service.assert_not_called()
+
+
+class ExistingVideoPreservationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.video=self.root/'video';self.video.mkdir()
+        self.file=self.video/'recording.mp4';self.file.write_bytes(b'preserved video')
+        self.config=self.root/'config';self.config.mkdir();(self.config/'auth.json').write_text('{}')
+        self.state=self.root/'state.db'
+        with sqlite3.connect(self.state) as db:
+            db.executescript('''CREATE TABLE creators(id INTEGER,name TEXT,monitor_video INTEGER);
+                INSERT INTO creators VALUES(1,'Video Creator',0);
+                CREATE TABLE identities(id INTEGER,handle TEXT);INSERT INTO identities VALUES(1,'linked');
+                CREATE TABLE settings(key TEXT,value TEXT);
+                CREATE TABLE video_candidates(id INTEGER,details TEXT);INSERT INTO video_candidates VALUES(1,'original');
+                CREATE TABLE backfill_jobs(id TEXT,creator_id INTEGER,state TEXT,cursor TEXT);
+                INSERT INTO backfill_jobs VALUES('b',1,'completed','original');
+                CREATE TABLE queue(id TEXT,state TEXT);INSERT INTO queue VALUES('q','imported');
+                CREATE TABLE downloads(id TEXT);CREATE TABLE aliases(id TEXT);
+                CREATE TABLE media_assets(recording_key TEXT,media_kind TEXT,saved_path TEXT,state TEXT,details TEXT);''')
+            db.execute("INSERT INTO settings VALUES('video.root',?)",(str(self.video),))
+            db.execute("INSERT INTO media_assets VALUES('a','Video',?,'imported','{}')",(str(self.file),))
+        context=patch.multiple(upgrade,DB=self.state,CONFIG=self.config);context.start();self.addCleanup(context.stop)
+
+    def update(self,sql,*args):
+        with sqlite3.connect(self.state) as db:db.execute(sql,args)
+
+    def test_video_rows_candidates_backfills_identities_and_settings_are_fingerprinted(self):
+        for statement in ("UPDATE video_candidates SET details='changed'", "UPDATE backfill_jobs SET cursor='changed'",
+                          "UPDATE identities SET handle='changed'", "INSERT INTO settings VALUES('custom','preserved')",
+                          "UPDATE creators SET name='changed'"):
+            before=upgrade.existing_video_state()['videoPreservationHash'];self.update(statement)
+            self.assertNotEqual(before,upgrade.existing_video_state()['videoPreservationHash'])
+
+    def test_video_content_and_artwork_inventory_changes_are_detected(self):
+        before=upgrade.existing_video_state()
+        self.file.write_bytes(b'changed video')
+        after=upgrade.existing_video_state()
+        self.assertNotEqual(before['videoFilesHash'],after['videoFilesHash'])
+        (self.video/'artwork.jpg').write_bytes(b'artwork')
+        self.assertNotEqual(after['videoInventoryHash'],upgrade.existing_video_state()['videoInventoryHash'])
+
+    def test_missing_or_changed_verified_import_cannot_pass_upgrade_audit(self):
+        sha=hashlib.sha256(self.file.read_bytes()).hexdigest()
+        self.update('UPDATE media_assets SET details=?',json.dumps({'asmarr_file':{'sha256':sha}}))
+        upgrade.existing_video_state()
+        self.file.write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError,'digest_mismatch'):upgrade.existing_video_state()
+        self.file.unlink()
+        with self.assertRaisesRegex(ValueError,'imported_video_missing'):upgrade.existing_video_state()
+
+    def test_resumable_backfill_and_active_downloads_are_reported(self):
+        self.update("UPDATE creators SET monitor_video=1")
+        self.update("UPDATE backfill_jobs SET state='failed'")
+        self.update("UPDATE queue SET state='downloading'")
+        state=upgrade.existing_video_state()
+        self.assertEqual(1,state['resumableBackfills']);self.assertEqual(1,state['activeDownloadJobs'])
+
+    def test_password_config_and_empty_removal_migration_are_preserved(self):
+        before=upgrade.existing_video_state()
+        self.update("CREATE TABLE creator_exclusions(name TEXT)")
+        self.assertEqual(before,upgrade.existing_video_state())
+        (self.config/'auth.json').write_text('{"changed":true}')
+        self.assertNotEqual(before['protectedConfigHash'],upgrade.existing_video_state()['protectedConfigHash'])
 
 
 if __name__ == '__main__': unittest.main()

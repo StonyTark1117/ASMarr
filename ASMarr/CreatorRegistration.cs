@@ -15,6 +15,7 @@ public static class CreatorRegistration
     {
         if(!ValidIdentity(identity))return new(null,"Invalid source identity");
         using var db=store.Open();using var transaction=db.BeginTransaction();using var command=db.CreateCommand();command.Transaction=transaction;
+        if(CreatorRemoval.Excluded(store,"",[identity]))return new(null,"Identity is excluded. Allow re-addition in Settings first");
         command.CommandText="SELECT count(*) FROM creators WHERE id=$id";command.Parameters.AddWithValue("$id",creatorId);
         if(Convert.ToInt32(command.ExecuteScalar())!=1)return new(null,"Creator does not exist");
         command.Parameters.Clear();command.CommandText="SELECT count(*) FROM identities WHERE kind=$kind AND handle=$handle COLLATE NOCASE";
@@ -34,6 +35,7 @@ public static class CreatorRegistration
         string root=store.Setting("root");
         if(!Path.IsPathFullyQualified(root))return new(null,"Configure an absolute library root first");
         using var db=store.Open();using var transaction=db.BeginTransaction();using var command=db.CreateCommand();command.Transaction=transaction;
+        if(CreatorRemoval.Excluded(store,name,identities)||aliases.Any(alias=>CreatorRemoval.Excluded(store,alias,[])))return new(null,"Creator is excluded. Allow re-addition in Settings first");
         command.CommandText="SELECT count(*) FROM profiles WHERE id=$id";command.Parameters.AddWithValue("$id",input.ProfileId);
         if(Convert.ToInt32(command.ExecuteScalar())!=1)return new(null,"Acquisition profile does not exist");
         command.Parameters.Clear();command.CommandText="SELECT count(*) FROM video_quality_profiles WHERE id=$id";command.Parameters.AddWithValue("$id",input.VideoQualityProfileId);
@@ -57,6 +59,8 @@ public static class CreatorRegistration
             command.Parameters.Clear();command.CommandText="INSERT INTO identities(creator_id,kind,handle,enabled) VALUES($creator,$kind,$handle,$enabled)";
             command.Parameters.AddWithValue("$creator",id);command.Parameters.AddWithValue("$kind",identity.Kind);command.Parameters.AddWithValue("$handle",identity.Handle);command.Parameters.AddWithValue("$enabled",identity.Enabled?1:0);command.ExecuteNonQuery();
         }
+        command.Parameters.Clear();command.CommandText="UPDATE assets SET creator=$name WHERE creator=$name COLLATE NOCASE";
+        command.Parameters.AddWithValue("$name",name);command.ExecuteNonQuery();
         transaction.Commit();return new(id,null);
     }
 }

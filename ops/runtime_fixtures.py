@@ -86,7 +86,7 @@ class EvidenceResult(unittest.TextTestResult):
         self.executed = []
 
 
-def verify(root, application, deployment, include_video=False):
+def verify(root, application, deployment, include_video=False, include_removal=False):
     manifest = verify_fixture_files(root, deployment)
     before = artifact_hash(application)
     if before != deployment.get('artifactSha256'):
@@ -99,12 +99,16 @@ def verify(root, application, deployment, include_video=False):
         import test_video
         selected += tuple('test_video.VideoTests.' + name
                           for name in loader.getTestCaseNames(test_video.VideoTests))
+    if include_removal:
+        import test_creator_removal
+        for cls in (test_creator_removal.CreatorRemovalTests,test_creator_removal.PlexRemovalTests):
+            selected += tuple('test_creator_removal.'+cls.__name__+'.'+name for name in loader.getTestCaseNames(cls))
     suite = loader.loadTestsFromNames(selected)
     with patch('socket.socket.connect', side_effect=AssertionError('runtime_fixtures_network_forbidden')):
         result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=2, resultclass=EvidenceResult).run(suite)
     # The loaders must import the installed code, not repository provider copies.
     provider_root = (Path(application)/'providers').resolve()
-    modules = ('bridge', 'scraper', 'plex_playlists') + (('video_media','youtube_source') if include_video else ())
+    modules = ('bridge', 'scraper', 'plex_playlists') + (('video_media','youtube_source') if include_video else ()) + (('creator_removal',) if include_removal else ())
     for name in modules:
         module = sys.modules.get(name)
         if not module or not Path(module.__file__).resolve().is_relative_to(provider_root):
@@ -133,13 +137,14 @@ def main():
     run.add_argument('--deployment', type=Path, default=Path('/var/lib/asmarr/acceptance/deployed-release.json'))
     run.add_argument('--output', type=Path, required=True)
     run.add_argument('--include-video', action='store_true')
+    run.add_argument('--include-removal', action='store_true')
     args = parser.parse_args()
     if args.operation == 'prepare':
         manifest = prepare(args.repository, args.commit, args.output)
         print(json.dumps({'sourceCommit':manifest['sourceCommit'], 'fixtureFiles':len(manifest['files']), 'archive':str(args.output)}))
     else:
         from plex_invariants import write_protected
-        report = verify(args.fixtures, args.application, json.loads(args.deployment.read_text()), args.include_video)
+        report = verify(args.fixtures, args.application, json.loads(args.deployment.read_text()), args.include_video, args.include_removal)
         write_protected(args.output, report)
         print(json.dumps({'evidence':str(args.output), 'testsRun':report['testsRun'], 'passed':report['passed']}))
         if not report['passed']:

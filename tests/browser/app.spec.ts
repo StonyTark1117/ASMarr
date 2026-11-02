@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 const config = () =>
   JSON.parse(readFileSync("./runtime/session.json", "utf8")).config;
 const auth = () => JSON.parse(readFileSync(config() + "/auth.json", "utf8"));
@@ -710,4 +711,74 @@ test("manual creator onboarding preserves audio-only defaults", async ({
       );
     })
     .toBe(true);
+});
+test("creator removal defaults to keeping files, blocks rediscovery, reconnects and deletes only tracked media", async ({ page, request }) => {
+  test.setTimeout(90000);
+  const manifest = JSON.parse(readFileSync("./runtime/session.json", "utf8"));
+  const headers = { "X-Api-Key": auth().apiKey };
+  const name = "Removal Test Reader";
+  const added = await request.post("/api/v1/creators", { headers, data: { name, profileId: 1 } });
+  expect(added.status()).toBe(201);
+  const id = (await added.json()).id;
+  const file = execFileSync("python3", ["-c", `
+import sqlite3,sys
+from pathlib import Path
+state=Path(sys.argv[1]);assert state.name=='state' and state.parent.name.startswith('session-')
+root=state.parent/'library';root.mkdir(exist_ok=True)
+file=root/'removal-test.mp3';file.write_bytes(b'isolated removal recording')
+with sqlite3.connect(state/'asmarr.db',timeout=30) as db:
+ db.execute("UPDATE settings SET value='production' WHERE key='mode'")
+ db.execute("UPDATE settings SET value=? WHERE key='root'",(str(root),))
+ db.execute("UPDATE tasks SET enabled=0")
+ db.execute("UPDATE commands SET state='cancelled' WHERE state='queued'")
+ db.execute("INSERT INTO assets(key,url,targets,source,creator,title,state,saved_path) VALUES('removal:fixture','https://example.invalid/test','[]','fixture',?,'Removal recording','complete',?)",(sys.argv[2],str(file)))
+print(file)
+`, manifest.state, name], { encoding: "utf8" }).trim();
+  await login(page);
+  await page.getByRole("button", { name: "Creators", exact: true }).click();
+  await page.getByRole("button", { name, exact: true }).click();
+  await page.getByRole("button", { name: "Remove creator…", exact: true }).click();
+  let dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("radio", { name: /Remove creator, keep files/ })).toBeChecked();
+  await expect(dialog.getByRole("checkbox", { name: "Prevent automatic re-addition" })).toBeChecked();
+  await page.screenshot({ path: "runtime/removal-preview.png", fullPage: true });
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(existsSync(file)).toBe(true);
+  expect((await (await request.get("/api/v1/creators/" + id, { headers })).json()).creator.name).toBe(name);
+  await page.getByRole("button", { name: "Remove creator…", exact: true }).click();
+  await dialog.getByRole("button", { name: "Remove creator, keep files", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "Creator removed: " + name })).toBeVisible({ timeout: 45000 });
+  await expect(dialog.getByText("Plex: unchanged. Download-client originals were kept.")).toBeVisible();
+  expect(existsSync(file)).toBe(true);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+  const hidden = await (await request.get("/api/v1/recordings?q=Removal", { headers })).json();
+  expect(hidden.some((row: any) => row.key === "removal:fixture")).toBe(false);
+  expect((await request.post("/api/v1/creators", { headers, data: { name, profileId: 1 } })).status()).toBe(400);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Removed creators", exact: true }).click();
+  await expect(page.getByText(name, { exact: true })).toBeVisible();
+  page.once("dialog", d => d.accept());
+  await page.getByRole("button", { name: "Allow re-addition", exact: true }).click();
+  await expect(page.getByText(name, { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Creators", exact: true }).click();
+  await page.getByRole("button", { name: "Add creator", exact: true }).click();
+  await page.getByLabel("New creator name").fill(name);
+  await page.getByRole("button", { name: "Create creator", exact: true }).click();
+  await page.getByRole("button", { name, exact: true }).click();
+  await expect(page.getByText("Removal recording", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Remove creator…", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: /Remove creator and delete files/ }).check();
+  const removeButton = dialog.getByRole("button", { name: "Remove and delete files", exact: true });
+  await expect(removeButton).toBeDisabled();
+  await dialog.getByLabel("Confirm creator name").fill("wrong");
+  await expect(removeButton).toBeDisabled();
+  await dialog.getByLabel("Confirm creator name").fill(name);
+  await removeButton.click();
+  await expect(dialog.getByRole("heading", { name: "Creator removed: " + name })).toBeVisible({ timeout: 45000 });
+  await expect(dialog.getByText(/1 files deleted/)).toBeVisible();
+  expect(existsSync(file)).toBe(false);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  execFileSync("python3", ["-c", "import sqlite3,sys;db=sqlite3.connect(sys.argv[1]+'/asmarr.db');db.execute(\"UPDATE settings SET value='shadow' WHERE key='mode'\");db.commit()", manifest.state]);
 });
