@@ -1,6 +1,6 @@
 import { test, expect, Page } from "@playwright/test";
 
-async function dashboard(page: Page, variant: "healthy" | "attention" | "empty" | "error" | "held") {
+async function dashboard(page: Page, variant: "healthy" | "attention" | "empty" | "error" | "held" | "badCommands") {
   const now = new Date().toISOString();
   const disk = { available: 100 * 1024 ** 3, total: 200 * 1024 ** 3 };
   const status = { mode: "production", maintenanceHeld: variant === "held", counts: [], creators: [{count: 2}], sources: [{count: 1}],
@@ -22,7 +22,7 @@ async function dashboard(page: Page, variant: "healthy" | "attention" | "empty" 
     if (path.startsWith("events")) return route.abort();
     if (path === "health" && variant === "error") return route.fulfill({status: 503, body: "Fixture unavailable"});
     const responses: Record<string, unknown> = {auth: {username: "fixture"}, "system/status": status,
-      health, tasks, settings: [{key: "video.free_space_gib", value: "20"}], "video/profiles": [], profiles: []};
+      health, tasks, commands: variant === "badCommands" ? {} : [], settings: [{key: "video.free_space_gib", value: "20"}], "video/profiles": [], profiles: []};
     return route.fulfill({json: responses[path] ?? {}});
   });
   await page.goto("/");
@@ -58,6 +58,7 @@ test("System Health exposes failed work, disabled schedules, stale backups and l
   await tile.screenshot({path: "test-results/system-health-desktop.png"});
   await tile.getByRole("button", {name: "Scheduled tasks"}).click();
   await expect(page.getByRole("heading", {name: "Scheduled tasks"})).toBeVisible();
+  await expect(page.getByText("No recent commands.", {exact: true})).toBeVisible();
 });
 
 test("System Health does not claim healthy before sources and backups have been checked", async ({page}) => {
@@ -78,4 +79,14 @@ test("System Health does not claim healthy while provider work is held", async (
   const tile = await dashboard(page, "held");
   await expect(tile.getByText("Needs attention", {exact: true})).toBeVisible();
   await expect(tile.getByText(/Provider work is held/)).toBeVisible();
+});
+
+test("unavailable recent commands cannot crash task navigation", async ({page}) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const tile = await dashboard(page, "badCommands");
+  await tile.getByRole("button", {name: "Scheduled tasks"}).click();
+  await expect(page.getByRole("heading", {name: "Scheduled tasks"})).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("Recent commands could not be loaded");
+  expect(errors).toEqual([]);
 });

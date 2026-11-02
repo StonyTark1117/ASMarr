@@ -42,7 +42,11 @@ def build(repository,publish,toolchain,output,commit,version):
         if '__pycache__' in relative.parts or path.suffix=='.pyc':continue
         check_public_path(relative)
         if path.is_symlink():raise ValueError('Published tree must not contain symlinks')
-        if path.is_file():add('application/'+relative.as_posix(),path.read_bytes(),bool(path.stat().st_mode&0o111))
+        if path.is_file():
+            data=path.read_bytes()
+            if path.name in ('ASMarr.dll','ASMarr.pdb') and str(repository.resolve()).encode() in data:
+                raise ValueError('Private build paths must be mapped out of published symbols/assemblies')
+            add('application/'+relative.as_posix(),data,bool(path.stat().st_mode&0o111))
     names=git(repository,'ls-tree','-r','--name-only',commit,'--','ops','docs','packaging','README.md').decode().splitlines()
     for name in names:
         add('application/'+name,git(repository,'show',commit+':'+name))

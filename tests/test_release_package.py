@@ -82,6 +82,10 @@ class ReleasePackageTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.package()
         self.assertFalse((self.root/'output').exists())
 
+    def test_private_build_paths_in_debug_symbols_are_not_published(self):
+        (self.publish/'ASMarr.pdb').write_bytes(str(self.repo.resolve()).encode())
+        with self.assertRaises(ValueError):self.package()
+
     def test_existing_installation_guard_runs_before_package_or_system_changes(self):
         prefix=self.root/'prefix';(prefix/'opt/asmarr').mkdir(parents=True)
         audio=self.root/'audio';audio.mkdir();video=self.root/'video';video.mkdir()

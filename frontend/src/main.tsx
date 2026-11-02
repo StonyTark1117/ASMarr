@@ -545,7 +545,7 @@ function App() {
           }
         >
           <span className="pulse" />
-          <span>{live ? "Connected to CT130" : "Connecting to CT130"}</span>
+          <span>{live ? "Connected to server" : "Connecting to server"}</span>
           <small>ASMarr v0.2.0</small>
         </div>
       </aside>
@@ -2676,12 +2676,26 @@ function BulkCreatorRemovalDialog({ creatorIds, onClose }: { creatorIds: number[
   </dialog>;
 }
 function CommandList({ tick }: { tick: number }) {
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<Row[] | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
+    let current = true;
     api("commands")
-      .then(setRows)
-      .catch(() => {});
+      .then((value) => {
+        if (!Array.isArray(value) || value.some((row) => !row || typeof row !== "object"))
+          throw new Error("Invalid command list response");
+        if (current) { setRows(value); setUnavailable(false); }
+      })
+      .catch(() => { if (current) { setRows(null); setUnavailable(true); } });
+    return () => { current = false; };
   }, [tick]);
+  if (unavailable) return <p role="alert">Recent commands could not be loaded. Refresh or check System Health.</p>;
+  if (!rows) return <p className="muted">Loading recent commands…</p>;
+  if (!rows.length) return <p className="muted">No recent commands.</p>;
+  const result = (value: unknown) => {
+    try { return JSON.stringify(typeof value === "string" ? JSON.parse(value) : value, null, 2); }
+    catch { return "Command result is invalid; inspect protected diagnostics."; }
+  };
   return (
     <div>
       {rows.slice(0, 15).map((c) => (
@@ -2695,7 +2709,7 @@ function CommandList({ tick }: { tick: number }) {
             <details>
               <summary>Result</summary>
               <pre>
-                {c.error || JSON.stringify(JSON.parse(c.result), null, 2)}
+                {c.error || result(c.result)}
               </pre>
             </details>
           )}
