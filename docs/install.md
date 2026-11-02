@@ -2,7 +2,10 @@
 
 The first packaged release targets **Debian 12, Linux x64**, with systemd.
 It includes a self-contained .NET application and pinned yt-dlp/Deno tools.
-Python, ffmpeg/ffprobe, OpenSSL and supporting packages are installed through apt.
+Python, Chromium, ffmpeg/ffprobe, OpenSSL and supporting packages are installed
+through apt. Python Playwright 1.64.1 is installed into a dedicated virtual
+environment under `/opt/asmarr-runtime` for Hotaudio browser capture. Hotaudio
+starts disabled until its runtime is verified.
 Other platforms are not yet packaged/tested.
 
 ## Already using ASMarr or the old scraper?

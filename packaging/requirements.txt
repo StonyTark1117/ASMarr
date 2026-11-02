@@ -1,4 +1,6 @@
-# Debian 12 package equivalents: python3-requests python3-yaml python3-mutagen
+# Debian 12 package equivalents: python3-requests python3-yaml python3-mutagen.
+# Hotaudio capture also needs Chromium and this Python browser driver.
 requests>=2.28,<3
 PyYAML>=6,<7
 mutagen>=1.46,<2
+playwright==1.64.1

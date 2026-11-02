@@ -64,8 +64,8 @@ def install(package,sha,certificate,key,recipient,audio,video,host,ca=None,prefi
     audio,video=media_root(audio),media_root(video)
     if audio.is_relative_to(video) or video.is_relative_to(audio):raise ValueError('Media roots overlap')
     if any(audio.iterdir()) or any(video.iterdir()):raise ValueError('Fresh installation needs empty dedicated media roots; existing media requires import/migration')
-    app=prefix/'opt/asmarr';config=prefix/'etc/asmarr';state=prefix/'var/lib/asmarr';unit=prefix/'etc/systemd/system/asmarr.service'
-    for target in (app,config,state,unit,prefix/'var/lib/asmr-scraper/state.db'):
+    app=prefix/'opt/asmarr';runtime=prefix/'opt/asmarr-runtime';config=prefix/'etc/asmarr';state=prefix/'var/lib/asmarr';unit=prefix/'etc/systemd/system/asmarr.service'
+    for target in (app,runtime,config,state,unit,prefix/'var/lib/asmr-scraper/state.db'):
         if target.exists() or target.is_symlink():raise ValueError('Existing installation/state detected; use migration or audited upgrade instead')
     if apply and (prefix!=Path('/') or os.geteuid()!=0):raise ValueError('Apply requires root on the actual target; fixture prefixes are validate-only')
     if apply:
@@ -92,7 +92,9 @@ def install(package,sha,certificate,key,recipient,audio,video,host,ca=None,prefi
         manifest=unpack(package,sha,Path(scratch))
         if not apply:return {'verified':True,'installed':False,'version':manifest['version'],'sourceCommit':manifest['sourceCommit'],'next':'Use --apply as root only on an empty Debian12 host after reviewing the installation guide.'}
         subprocess.run(['apt-get','update'],check=True)
-        subprocess.run(['apt-get','install','-y','python3','python3-requests','python3-yaml','python3-mutagen','ffmpeg','openssl','acl','ca-certificates'],check=True)
+        subprocess.run(['apt-get','install','-y','python3','python3-venv','python3-requests','python3-yaml','python3-mutagen','chromium','ffmpeg','openssl','acl','ca-certificates'],check=True)
+        subprocess.run(['python3','-m','venv','--system-site-packages',str(runtime/'python')],check=True)
+        subprocess.run([str(runtime/'python/bin/python3'),'-m','pip','install','playwright==1.64.1'],check=True)
         try:account=pwd.getpwnam('asmarr')
         except KeyError:
             subprocess.run(['useradd','--system','--home-dir','/var/lib/asmarr','--shell','/usr/sbin/nologin','asmarr'],check=True);account=pwd.getpwnam('asmarr')

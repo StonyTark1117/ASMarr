@@ -157,5 +157,5 @@ def resolve_audio(http, kind, url):
             raise SourceFailure('audiochan_stream_unavailable')
         return media, headers
     if kind == 'hotaudio':
-        raise SourceFailure('hotaudio_capture_unverified')
+        raise SourceFailure('hotaudio_requires_browser_capture')
     raise SourceFailure('unsupported_creator_source')

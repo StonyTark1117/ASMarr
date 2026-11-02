@@ -31,6 +31,7 @@ import sfw_sources
 import plex_playlists
 import acquisition_profiles
 import creator_audio_sources
+import hotaudio_capture
 
 UA = 'linux:asmr-scraper:1.0 (personal media library)'
 F4_RE = re.compile(r'\[\s*F4[FMA]+\s*\]', re.I)
@@ -694,8 +695,21 @@ def save_asset(asset, cfg, http):
     last_error = None
     for kind, url in json.loads(asset['targets']):
         tmp = None
+        expected_capture_duration = None
         try:
-            if kind == 'youtube':
+            if kind == 'hotaudio':
+                ext = '.m4a'
+                if ext not in cfg.get('allowed_formats', AUDIO_EXTS):
+                    raise MediaError('profile_format_rejected')
+                out = destination(ext)
+                if out.exists():
+                    validate_audio(out)
+                    return out, url
+                tmp = out.with_name(out.name + '.part')
+                expected_capture_duration = hotaudio_capture.capture(
+                    url, tmp, max_bytes=cfg.get('max_file_bytes', 2147483648),
+                    max_seconds=cfg.get('hotaudio_capture_max_seconds', 1200))
+            elif kind == 'youtube':
                 if not cfg.get('youtube_enabled', False):
                     raise MediaError('youtube_disabled')
                 out = destination('.m4a')
@@ -725,7 +739,7 @@ def save_asset(asset, cfg, http):
                         dst.flush()
                         os.fsync(dst.fileno())
             else:
-                if kind in {'whyp', 'audiochan', 'hotaudio'}:
+                if kind in {'whyp', 'audiochan'}:
                     media, headers = creator_audio_sources.resolve_audio(http, kind, url)
                 else:
                     media, headers = target_audio(http, kind, url), {}
@@ -751,6 +765,9 @@ def save_asset(asset, cfg, http):
                     f.flush()
                     os.fsync(f.fileno())
             validation = validate_audio(tmp)
+            if expected_capture_duration is not None and abs(
+                    float(validation['format']['duration']) - expected_capture_duration) > 1:
+                raise MediaError('hotaudio_capture_incomplete')
             if any(s.get('codec_type') == 'video' for s in validation.get('streams', [])):
                 raise MediaError('output_contains_video')
             if float(validation['format']['duration']) < cfg.get('minimum_duration', 0):
@@ -762,8 +779,9 @@ def save_asset(asset, cfg, http):
             return out, url
         except (SourceError, requests.RequestException, OSError, ValueError, subprocess.SubprocessError, mutagen.MutagenError) as e:
             last_error = str(e) if isinstance(e, (SourceError, MediaError, youtube.YouTubeError,
-                                                 creator_audio_sources.SourceFailure)) else type(e).__name__
-            if tmp is not None and tmp.exists() and tmp.resolve().is_relative_to(folder.resolve()):
+                                                 creator_audio_sources.SourceFailure,
+                                                 hotaudio_capture.CaptureError)) else type(e).__name__
+            if tmp is not None and tmp.exists() and tmp.resolve().is_relative_to(root):
                 tmp.unlink()
     raise SourceError(last_error or 'no_targets')
 

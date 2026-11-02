@@ -1,6 +1,13 @@
+import json
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 import creator_audio_sources as sources
+import hotaudio_capture
+import scraper
 
 
 class Response:
@@ -82,9 +89,32 @@ class CreatorAudioSourceTests(unittest.TestCase):
             sources.resolve_audio(HTTP([Response(body=dict(item, visibility='private'))]),
                                   'audiochan', 'https://audiochan.com/a/ABC123')
 
-    def test_hotaudio_capture_is_not_reported_as_working(self):
-        with self.assertRaisesRegex(sources.SourceFailure, 'capture_unverified'):
+    def test_hotaudio_uses_separate_browser_capture(self):
+        with self.assertRaisesRegex(sources.SourceFailure, 'requires_browser_capture'):
             sources.resolve_audio(HTTP([]), 'hotaudio', 'https://hotaudio.net/u/creator/post')
+
+    def test_hotaudio_rejects_nonpublic_track_urls(self):
+        for url in ('http://hotaudio.net/u/creator/post',
+                    'https://example.com/u/creator/post',
+                    'https://hotaudio.net/account/private'):
+            with self.assertRaisesRegex(hotaudio_capture.CaptureError, 'invalid_hotaudio_track'):
+                hotaudio_capture.capture(url, '/tmp/unused.m4a', max_bytes=1024)
+
+    def test_hotaudio_partial_capture_never_publishes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def incomplete(_, destination, **kwargs):
+                subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+                                '-i', 'sine=frequency=440:duration=1', '-c:a', 'aac',
+                                '-f', 'ipod', str(destination)], check=True)
+                return 10.0
+            asset = {'key': 'hotaudio:short', 'creator': 'Example', 'title': 'Short',
+                     'published': 0, 'targets': json.dumps([['hotaudio',
+                        'https://hotaudio.net/u/creator/public-post']])}
+            with mock.patch.object(hotaudio_capture, 'capture', side_effect=incomplete):
+                with self.assertRaisesRegex(scraper.SourceError, 'hotaudio_capture_incomplete'):
+                    scraper.save_asset(asset, {'output_root': directory}, HTTP([]))
+            self.assertFalse(list(Path(directory).rglob('*.m4a')))
+            self.assertFalse(list(Path(directory).rglob('*.part')))
 
 
 if __name__ == '__main__':
