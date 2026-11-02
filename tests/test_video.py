@@ -20,6 +20,7 @@ CREATE TABLE aliases(id TEXT PRIMARY KEY,asset_key TEXT);
 CREATE TABLE creators(id INTEGER PRIMARY KEY,name TEXT UNIQUE,monitored INTEGER,profile_id INTEGER,
  monitor_video INTEGER DEFAULT 0,video_quality_profile_id INTEGER DEFAULT 1);
 CREATE TABLE identities(id INTEGER PRIMARY KEY,creator_id INTEGER,kind TEXT,handle TEXT,enabled INTEGER DEFAULT 1);
+CREATE TABLE profiles(id INTEGER PRIMARY KEY,settings TEXT);
 CREATE TABLE media_assets(recording_key TEXT,media_kind TEXT,wanted INTEGER,state TEXT,saved_path TEXT,
  source_url TEXT,provider_id TEXT,attempts INTEGER DEFAULT 0,retry_after INTEGER DEFAULT 0,error TEXT,acquired INTEGER,details TEXT DEFAULT '{}',PRIMARY KEY(recording_key,media_kind));
 CREATE TABLE video_candidates(id INTEGER PRIMARY KEY,recording_key TEXT,provider TEXT,provider_id TEXT,url TEXT,
@@ -380,6 +381,60 @@ class VideoTests(unittest.TestCase):
         self.assertEqual([(c.args[2],c.kwargs['start']) for c in listing.call_args_list],
                          [(10002,10001),(10004,10003),(10004,10003)])
         self.assertEqual(self.db.execute('SELECT count(*) FROM video_candidates').fetchone()[0], 3)
+
+    def test_video_backfill_applies_creator_duration_topics_and_exclusions(self):
+        rules = {'minimumDuration':600,'requiredTopics':['rain'],'excludedTerms':['preview']}
+        self.db.execute('INSERT INTO profiles VALUES(1,?)', (json.dumps(rules),))
+        self.db.execute("INSERT INTO identities(creator_id,kind,handle) VALUES(1,'youtube','channel-1')")
+        entries = [{'id':f'video{i:06d}','title':title,'duration':duration,'availability':'public'}
+                   for i,title,duration in [(1,'ASMR rain',700),(2,'ASMR rain',300),
+                                             (3,'ASMR sleep',700),(4,'ASMR rain preview',700)]]
+        with patch.object(b.core.youtube, 'listing', return_value=entries):
+            result = v.backfill(self.db, self.cfg, {}, {'creatorId':1}, b.core)
+        self.assertEqual(result['eligible'], 1)
+        self.assertEqual(self.db.execute('SELECT provider_id FROM video_candidates').fetchone()[0], 'video000001')
+
+    def test_video_import_enforces_creator_minimum_duration(self):
+        self.db.execute('INSERT INTO profiles VALUES(1,?)', (json.dumps({'minimumDuration':600}),))
+        with self.assertRaisesRegex(v.VideoUnavailable, 'minimum_duration'):
+            v.import_video(self.db, self.cfg, 'recording', self.video_file(),
+                           {'provider':'youtube','provider_id':'abcdefghijk'})
+        self.assertEqual(list(self.video.rglob('*.mp4')), [])
+
+    def test_video_revalidates_source_metadata_before_transferring_media(self):
+        candidate = {'provider':'youtube','provider_id':'abcdefghijk','url':'https://youtu.be/abcdefghijk'}
+        base = {'title':'ASMR rain','duration':700,'availability':'public','age_limit':0}
+        self.db.execute('INSERT INTO profiles VALUES(1,?)', (json.dumps({'excludedTerms':['preview']}),))
+        for override in ({'availability':'private'}, {'age_limit':18}, {'live_status':'is_live'},
+                         {'duration':30}, {'title':'ASMR rain preview'}):
+            with self.subTest(override=override):
+                metadata = Mock(returncode=0, stdout=json.dumps(dict(base, **override)), stderr='')
+                with patch.object(v.subprocess, 'run', return_value=metadata) as run:
+                    with self.assertRaises(v.VideoUnavailable):
+                        v.download_video(self.db, self.cfg, 'recording', candidate)
+                self.assertEqual(run.call_count, 1)
+                self.assertIn('--skip-download', run.call_args.args[0])
+        self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_video_transfer_uses_validated_metadata_and_actual_publication_date(self):
+        candidate = {'provider':'youtube','provider_id':'abcdefghijk','url':'https://youtu.be/abcdefghijk'}
+        info = {'id':'abcdefghijk','title':'ASMR sleep','duration':700,'availability':'public','upload_date':'20230304'}
+        def execute(command, **_):
+            if '--dump-single-json' in command:
+                return Mock(returncode=0, stdout=json.dumps(info), stderr='')
+            source_json = Path(command[command.index('--load-info-json') + 1])
+            self.assertEqual(json.loads(source_json.read_text()), info)
+            self.assertEqual(source_json.stat().st_mode & 0o777, 0o600)
+            output = Path(command[command.index('-o') + 1].replace('%(ext)s','mp4'))
+            output.write_bytes(b'fixture media')
+            return Mock(returncode=0, stdout=str(output), stderr='')
+        with patch.object(v.subprocess, 'run', side_effect=execute) as run, \
+             patch.object(v, 'import_video', return_value={'status':'imported'}) as imported:
+            v.download_video(self.db, self.cfg, 'recording', candidate)
+        self.assertEqual(run.call_count, 2)  # One metadata request, one media transfer.
+        self.assertEqual(imported.call_args.args[4]['published'], 1677888000)
+        self.assertEqual(self.db.execute("SELECT published FROM assets WHERE key='recording'").fetchone()[0], 1704067200)
+        self.assertEqual(list(self.downloads.iterdir()), [])
 
     def test_reddit_account_failure_preserves_page_and_opt_out_prevents_resume(self):
         self.db.execute("INSERT INTO identities(creator_id,kind,handle) VALUES(1,'reddit','creator_user')")

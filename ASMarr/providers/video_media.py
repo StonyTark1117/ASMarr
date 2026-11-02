@@ -17,6 +17,9 @@ import time
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 import requests
+import acquisition_profiles
+import scraper
+import youtube_source
 
 
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.webm', '.mov', '.m4v'}
@@ -237,6 +240,12 @@ def _video_monitoring_enabled(db, creator_id):
     return bool(row and row[0])
 
 
+def _creator_config(db, cfg, creator_name):
+    row = db.execute('''SELECT p.settings FROM profiles p JOIN creators c ON c.profile_id=p.id
+                        WHERE c.name=?''', (creator_name,)).fetchone()
+    return acquisition_profiles.discovery_config(cfg, json.loads(row[0]) if row else {})
+
+
 def _reddit_video_duration(post):
     crossposts = post.get('crosspost_parent_list') or []
     original = crossposts[0] if crossposts else post
@@ -277,6 +286,7 @@ def backfill(db, cfg, secrets, args, core):
     creator = db.execute('SELECT * FROM creators WHERE id=?', (creator_id,)).fetchone()
     if not creator:
         raise ValueError('creator_not_found')
+    cfg = _creator_config(db, cfg, creator['name'])
     job = db.execute("SELECT * FROM backfill_jobs WHERE creator_id=? AND media_kind='Video' ORDER BY started DESC LIMIT 1",
                      (creator_id,)).fetchone()
     resumable = bool(job and job['state'] in {'queued', 'running', 'interrupted', 'failed', 'cancelled'}
@@ -492,17 +502,20 @@ def import_video(db, cfg, key, source, candidate, audio_importer=None, artwork=N
     if not source.is_relative_to(download_root) or source.suffix.lower() not in VIDEO_EXTENSIONS:
         raise ValueError('video_import_path_invalid')
     info = probe(source)
-    minimum_duration = float(cfg.get('youtube_min_duration_seconds', 0))
-    if float(info.get('format', {}).get('duration') or 0) < minimum_duration:
-        raise VideoUnavailable('video_below_minimum_duration')
     asset = db.execute('SELECT * FROM assets WHERE key=?', (key,)).fetchone()
     if not asset:
         raise ValueError('recording_not_found')
+    cfg = _creator_config(db, cfg, asset['creator'])
+    minimum_duration = float(cfg.get('youtube_min_duration_seconds', 0))
+    if float(info.get('format', {}).get('duration') or 0) < minimum_duration:
+        raise VideoUnavailable('video_below_minimum_duration')
     ensure_asset_rows(db, key, video_wanted=True,
                       source_url=candidate.get('normalized_url') or candidate.get('url'),
                       provider_id=candidate.get('provider_id'))
     root = Path(cfg['video_root']).resolve()
-    destination = video_name(asset, candidate, source.suffix, root)
+    naming_asset = dict(asset)
+    naming_asset['published'] = candidate.get('published') or asset['published']
+    destination = video_name(naming_asset, candidate, source.suffix, root)
     destination.parent.mkdir(parents=True, exist_ok=True)
     expected, video_created = _copy_atomic(source, destination, probe, 'video_import_destination_conflict')
     artwork_destination = None
@@ -659,15 +672,43 @@ def scan_library(db, cfg):
 
 
 def download_video(db, cfg, key, candidate, audio_importer=None):
+    recording = db.execute('SELECT creator FROM assets WHERE key=?', (key,)).fetchone()
+    if not recording:
+        raise ValueError('recording_not_found')
+    cfg = _creator_config(db, cfg, recording['creator'])
     work_root = Path(cfg.get('download_root', '/mnt/downloads/asmarr')).resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='asmarr-video-', dir=work_root) as work:
+        metadata = subprocess.run(youtube_source.command(cfg) +
+                                  ['--dump-single-json','--skip-download',candidate['url']],
+                                  capture_output=True, text=True, timeout=120)
+        if metadata.returncode:
+            if any(marker in (metadata.stderr or '').casefold() for marker in TERMINAL_DOWNLOAD_MARKERS):
+                raise VideoUnavailable('video_source_unavailable')
+            raise ValueError('video_metadata_failed')
+        try:
+            info = json.loads(metadata.stdout)
+        except (TypeError, ValueError):
+            raise ValueError('video_metadata_invalid') from None
+        if not isinstance(info, dict):
+            raise ValueError('video_metadata_invalid')
+        ok, reason = youtube_source.eligibility(info, cfg)
+        if ok:
+            ok, reason = scraper.title_passes(info.get('title', ''), cfg,
+                                              trusted=True, topic_pattern=youtube_source.TOPIC_PATTERN)
+        if not ok:
+            raise VideoUnavailable(reason)
+        # Flat channel listings often omit publication dates. Use validated
+        # metadata for video naming without rewriting any existing audio record.
+        candidate = dict(candidate, published=youtube_source.published(info))
+        metadata_path = Path(work) / 'source.json'
+        metadata_path.write_text(json.dumps(info)); metadata_path.chmod(0o600)
         output = Path(work) / 'video.%(ext)s'
-        command = [cfg.get('youtube_binary', '/usr/local/bin/yt-dlp'), '--ignore-config', '--no-playlist',
+        command = youtube_source.command(cfg) + [
                    '--no-progress', '--no-simulate', '--socket-timeout', '20', '--retries', '2',
                    '--write-thumbnail', '--convert-thumbnails', 'jpg',
                    '-f', _format_selector(candidate.get('max_height')), '--print', 'after_move:filepath',
-                   '-o', str(output), candidate['url']]
+                   '-o', str(output), '--load-info-json', str(metadata_path)]
         p = subprocess.run(command, capture_output=True, text=True, timeout=7200)
         if p.returncode or not p.stdout.strip():
             message = (p.stderr or '').casefold()

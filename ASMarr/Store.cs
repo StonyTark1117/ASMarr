@@ -130,6 +130,12 @@ public sealed class Store
         var now=DateTimeOffset.UtcNow.ToString("O");
         Execute("UPDATE backfill_jobs SET state='interrupted',updated=$now,error='Service restarted during history scan' WHERE media_kind='Video' AND state='running'",("now",now));
     }
+    public int ResumeCancelledVideos(int creatorId) => Execute("""
+        UPDATE media_assets SET state='wanted',wanted=1,retry_after=0,error=NULL
+        WHERE media_kind='Video' AND state='cancelled'
+          AND recording_key IN (SELECT a.key FROM assets a JOIN creators c ON c.name=a.creator
+                                WHERE c.id=$id AND c.monitor_video=1)
+        """,("id",creatorId));
     public int EnqueueResumableVideoBackfills(TimeSpan failedRetryDelay)
     {
         var cutoff=DateTimeOffset.UtcNow.Subtract(failedRetryDelay).ToString("O");

@@ -95,5 +95,13 @@ var totals=CreatorLibrary.Read(store).Single(row=>row["name"]!.ToString()=="Firs
 Assert(Convert.ToInt32(totals["audio_completed"])==2,"creator totals include legacy complete and new imported audio");
 Assert(Convert.ToInt32(totals["video_completed"])==1,"video totals remain independent of audio compatibility states");
 Assert(store.Query("SELECT state FROM media_assets WHERE recording_key='legacy-audio' AND media_kind='Audio'")[0]["state"]!.ToString()=="complete","creator totals preserve migrated audio state without rewriting records");
+store.Execute("INSERT INTO media_assets(recording_key,media_kind,state,wanted,retry_after,error) VALUES('new-audio','Video','cancelled',0,999,'cancelled')");
+Assert(store.ResumeCancelledVideos(1)==0,"disabled creator cannot reactivate cancelled videos");
+store.Execute("UPDATE creators SET monitor_video=1 WHERE id=1");
+Assert(store.ResumeCancelledVideos(2)==0,"video resume is scoped to its creator");
+Assert(store.ResumeCancelledVideos(1)==1,"reenabling video monitoring restores previously cancelled work");
+Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='new-audio' AND media_kind='Video' AND state='wanted' AND wanted=1 AND retry_after=0 AND error IS NULL").Count==1,"resumed video is immediately eligible for its own queue");
+Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='legacy-audio' AND media_kind='Video' AND state='imported'").Count==1,"reenabling videos preserves imported video state");
+Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='new-audio' AND media_kind='Audio' AND state='imported'").Count==1,"reenabling videos preserves independent audio state");
 Console.WriteLine($"{assertions} store integration assertions passed");
 SqliteConnection.ClearAllPools();Directory.Delete(root,true);
