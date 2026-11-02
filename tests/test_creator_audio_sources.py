@@ -117,6 +117,11 @@ class CreatorAudioSourceTests(unittest.TestCase):
             with self.assertRaisesRegex(hotaudio_capture.CaptureError, 'invalid_hotaudio_track'):
                 hotaudio_capture.capture(url, '/tmp/unused.m4a', max_bytes=1024)
 
+    def test_hotaudio_rejects_invalid_capture_limits(self):
+        url = 'https://hotaudio.net/u/creator/public-post'
+        with self.assertRaisesRegex(hotaudio_capture.CaptureError, 'limit_invalid'):
+            hotaudio_capture.capture(url, '/tmp/unused.m4a', max_bytes=0)
+
     def test_hotaudio_partial_capture_never_publishes(self):
         with tempfile.TemporaryDirectory() as directory:
             def incomplete(_, destination, **kwargs):

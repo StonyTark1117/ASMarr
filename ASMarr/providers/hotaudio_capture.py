@@ -55,12 +55,15 @@ def capture(url, destination, *, max_bytes, max_seconds=1200):
     if parsed.scheme != 'https' or parsed.hostname not in {'hotaudio.net', 'www.hotaudio.net'} or not re.fullmatch(
             r'/u/[A-Za-z0-9_-]+/[^/]+/?', parsed.path):
         raise CaptureError('invalid_hotaudio_track')
-    browser_path = shutil.which('chromium') or shutil.which('chromium-browser')
-    if not browser_path:
-        raise CaptureError('chromium_not_installed')
     # The player buffers captured segments in browser memory until publication.
     # Bound memory even if a broader library profile permits larger files.
     max_bytes = min(int(max_bytes), 256 * 1024 * 1024)
+    max_seconds = min(int(max_seconds), 1200)
+    if max_bytes < 1 or max_seconds < 1:
+        raise CaptureError('hotaudio_capture_limit_invalid')
+    browser_path = shutil.which('chromium') or shutil.which('chromium-browser')
+    if not browser_path:
+        raise CaptureError('chromium_not_installed')
     try:
         from playwright.sync_api import sync_playwright
         from playwright.sync_api import Error as PlaywrightError
