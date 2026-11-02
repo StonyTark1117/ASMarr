@@ -9,6 +9,12 @@ class SourceFailure(ValueError):
     pass
 
 
+# Audiochan binds its public playback cookie to the User-Agent that requested
+# the anonymous play intent. Keep that value consistent through media transfer.
+AUDIOCHAN_UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+
+
 class TrackLinks(HTMLParser):
     def __init__(self, prefix, marker):
         super().__init__(convert_charrefs=True)
@@ -130,13 +136,18 @@ def resolve_audio(http, kind, url):
                       params={'token': '', 'lossless': 'false'}) as response:
             result = response.json()
         media = result.get('url') if isinstance(result, dict) else None
-        if not isinstance(media, str) or urlparse(media).hostname != 'cdn.whyp.it':
+        if not isinstance(media, str) or urlparse(media).scheme != 'https' or urlparse(media).hostname != 'cdn.whyp.it':
             raise SourceFailure('whyp_download_unavailable')
         return media, {}
     if kind == 'audiochan':
         if parsed.hostname != 'audiochan.com' or not re.fullmatch(r'/a/[A-Za-z0-9_-]{5,100}', parsed.path):
             raise SourceFailure('invalid_audiochan_track')
-        headers = {'Origin': 'https://audiochan.com', 'Referer': 'https://audiochan.com/'}
+        headers = {'Origin': 'https://audiochan.com', 'Referer': 'https://audiochan.com/',
+                   'User-Agent': AUDIOCHAN_UA}
+        # The public site creates an anonymous session before requesting a
+        # play intent. Its cookies stay in this short-lived HTTP session.
+        with http.request('POST', 'https://api.audiochan.com/auth/anonymous', headers=headers):
+            pass
         slug = parsed.path.split('/')[-1]
         with http.get('https://api.audiochan.com/audios/slug/' + slug, headers=headers) as response:
             item = response.json()
@@ -153,9 +164,9 @@ def resolve_audio(http, kind, url):
         with http.request('POST', 'https://api.audiochan.com/audios/' + identity + '/stream-url',
                           json={'file_id': file_id, 'play_intent': intent}, headers=headers) as response:
             media = response.json().get('url')
-        if not isinstance(media, str) or urlparse(media).hostname != 'stream.audiochan.com':
+        if not isinstance(media, str) or urlparse(media).scheme != 'https' or urlparse(media).hostname != 'stream.audiochan.com':
             raise SourceFailure('audiochan_stream_unavailable')
-        return media, headers
+        return media, dict(headers, Range='bytes=0-')
     if kind == 'hotaudio':
         raise SourceFailure('hotaudio_requires_browser_capture')
     raise SourceFailure('unsupported_creator_source')

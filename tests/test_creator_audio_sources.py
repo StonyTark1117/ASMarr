@@ -75,19 +75,32 @@ class CreatorAudioSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(sources.SourceFailure, 'download_unavailable'):
             sources.resolve_audio(HTTP([Response(body={'url': None})]),
                                   'whyp', 'https://whyp.it/tracks/title-ABC123')
+        with self.assertRaisesRegex(sources.SourceFailure, 'download_unavailable'):
+            sources.resolve_audio(HTTP([Response(body={'url': 'http://cdn.whyp.it/track.mp3'})]),
+                                  'whyp', 'https://whyp.it/tracks/title-ABC123')
 
     def test_audiochan_requires_public_metadata_and_fresh_play_intent(self):
         item = {'id': 'audio-id', 'visibility': 'public', 'status': 'published',
                 'audioFile': {'id': 'file-id'}}
-        http = HTTP([Response(body=item), Response(body={'play_intent': 'intent'}),
+        http = HTTP([Response(), Response(body=item), Response(body={'play_intent': 'intent'}),
                      Response(body={'url': 'https://stream.audiochan.com/path?expires=123'})])
         media, headers = sources.resolve_audio(http, 'audiochan', 'https://audiochan.com/a/ABC123')
         self.assertEqual(media.split('?')[0], 'https://stream.audiochan.com/path')
-        self.assertEqual([call[0] for call in http.calls], ['GET', 'POST', 'POST'])
-        self.assertEqual(http.calls[2][2]['json']['play_intent'], 'intent')
+        self.assertEqual([call[0] for call in http.calls], ['POST', 'GET', 'POST', 'POST'])
+        self.assertEqual(http.calls[0][1], 'https://api.audiochan.com/auth/anonymous')
+        self.assertEqual(http.calls[3][2]['json']['play_intent'], 'intent')
         self.assertEqual(headers['Referer'], 'https://audiochan.com/')
+        self.assertEqual(headers['User-Agent'], sources.AUDIOCHAN_UA)
+        self.assertEqual(headers['Range'], 'bytes=0-')
+        self.assertTrue(all(call[2]['headers']['User-Agent'] == sources.AUDIOCHAN_UA
+                            for call in http.calls))
         with self.assertRaisesRegex(sources.SourceFailure, 'audio_unavailable'):
-            sources.resolve_audio(HTTP([Response(body=dict(item, visibility='private'))]),
+            sources.resolve_audio(HTTP([Response(), Response(body=dict(item, visibility='private'))]),
+                                  'audiochan', 'https://audiochan.com/a/ABC123')
+        with self.assertRaisesRegex(sources.SourceFailure, 'stream_unavailable'):
+            sources.resolve_audio(HTTP([Response(), Response(body=item),
+                                        Response(body={'play_intent': 'intent'}),
+                                        Response(body={'url': 'http://stream.audiochan.com/path'})]),
                                   'audiochan', 'https://audiochan.com/a/ABC123')
 
     def test_hotaudio_uses_separate_browser_capture(self):
