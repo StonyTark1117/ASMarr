@@ -30,6 +30,7 @@ import youtube_source as youtube
 import sfw_sources
 import plex_playlists
 import acquisition_profiles
+import creator_audio_sources
 
 UA = 'linux:asmr-scraper:1.0 (personal media library)'
 F4_RE = re.compile(r'\[\s*F4[FMA]+\s*\]', re.I)
@@ -119,6 +120,9 @@ def canonical(url):
             return 'https://www.youtube.com/watch?v=' + video
     if host in {'soundgasm.net', 'www.soundgasm.net'}:
         return 'https://soundgasm.net' + quote(unquote(p.path).rstrip('/'), safe='/')
+    if host in {'whyp.it', 'www.whyp.it', 'audiochan.com', 'www.audiochan.com',
+                'hotaudio.net', 'www.hotaudio.net'}:
+        return 'https://' + host.removeprefix('www.') + quote(unquote(p.path).rstrip('/'), safe='/@-')
     return urlunparse((p.scheme.lower(), p.netloc.lower(), p.path, '', p.query, ''))
 
 
@@ -132,6 +136,12 @@ def targets(post, cfg):
             if not re.fullmatch(r'/u/[^/]+/[^/]+/?', urlparse(url).path):
                 continue
             kind = 'soundgasm'
+        elif host in {'whyp.it', 'www.whyp.it'} and re.fullmatch(r'/tracks/[^/]+-[A-Za-z0-9]+/?', urlparse(url).path):
+            kind = 'whyp'
+        elif host in {'audiochan.com', 'www.audiochan.com'} and re.fullmatch(r'/a/[A-Za-z0-9_-]{5,100}/?', urlparse(url).path):
+            kind = 'audiochan'
+        elif host in {'hotaudio.net', 'www.hotaudio.net'} and re.fullmatch(r'/u/[A-Za-z0-9_-]+/[^/]+/?', urlparse(url).path):
+            kind = 'hotaudio'
         elif host in {'i.redd.it', 'v.redd.it'}:
             if Path(urlparse(url).path).suffix.lower() not in AUDIO_EXTS:
                 continue
@@ -504,6 +514,28 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
                 stats['status'] = getattr(e, 'status', 'parse_failure')
                 stats['error'] = str(e) if isinstance(e, (SourceError, MediaError)) else type(e).__name__
             reports.append(stats)
+    for kind in ('whyp', 'audiochan', 'hotaudio'):
+        if kind not in selected:
+            continue
+        # Shadow fixtures are for legacy parser parity. These sites can put
+        # short-lived media links in HTML, so do not persist their responses.
+        source_http = HTTP(getattr(http, 'interval', 1.1)) if inspect else http
+        for creator in cfg.get(kind + '_creators', []):
+            stats = report(kind + ':' + creator)
+            try:
+                posts = creator_audio_sources.profile_listing(source_http, kind, creator)
+                stats['pages'] = 1
+                stats['parsed'] = len(posts)
+                if not posts:
+                    stats['status'] = 'empty'
+                for post in posts:
+                    accept(stats, kind + ':' + post['id'], creator, post['title'],
+                           [[kind, canonical(post['url'])]], post['published'], trusted=True)
+            except (SourceError, creator_audio_sources.SourceFailure,
+                    requests.RequestException, ValueError, KeyError) as e:
+                stats['status'] = getattr(e, 'status', 'unavailable')
+                stats['error'] = str(e) if isinstance(e, (SourceError, creator_audio_sources.SourceFailure)) else type(e).__name__
+            reports.append(stats)
     if 'youtube' in selected and cfg.get('youtube_enabled', False):
         for channel in cfg.get('youtube_channels', []):
             stats = report('youtube:' + channel['channel_id'])
@@ -693,8 +725,11 @@ def save_asset(asset, cfg, http):
                         dst.flush()
                         os.fsync(dst.fileno())
             else:
-                media = target_audio(http, kind, url)
-                ext = Path(urlparse(media).path).suffix.lower()
+                if kind in {'whyp', 'audiochan', 'hotaudio'}:
+                    media, headers = creator_audio_sources.resolve_audio(http, kind, url)
+                else:
+                    media, headers = target_audio(http, kind, url), {}
+                ext = '.m4a' if kind == 'audiochan' else Path(urlparse(media).path).suffix.lower()
                 if ext not in AUDIO_EXTS:
                     raise MediaError('unsupported_media_extension')
                 if ext not in cfg.get('allowed_formats', AUDIO_EXTS):
@@ -705,7 +740,7 @@ def save_asset(asset, cfg, http):
                 if out.exists():
                     validate_audio(out)
                     return out, url
-                with http.get(media, stream=True) as r, tmp.open('wb') as f:
+                with http.get(media, stream=True, headers=headers) as r, tmp.open('wb') as f:
                     size = 0
                     start = time.monotonic()
                     for chunk in r.iter_content(65536):
@@ -726,7 +761,8 @@ def save_asset(asset, cfg, http):
             os.replace(tmp, out)
             return out, url
         except (SourceError, requests.RequestException, OSError, ValueError, subprocess.SubprocessError, mutagen.MutagenError) as e:
-            last_error = str(e) if isinstance(e, (SourceError, MediaError, youtube.YouTubeError)) else type(e).__name__
+            last_error = str(e) if isinstance(e, (SourceError, MediaError, youtube.YouTubeError,
+                                                 creator_audio_sources.SourceFailure)) else type(e).__name__
             if tmp is not None and tmp.exists() and tmp.resolve().is_relative_to(folder.resolve()):
                 tmp.unlink()
     raise SourceError(last_error or 'no_targets')

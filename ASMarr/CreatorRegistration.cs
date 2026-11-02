@@ -10,7 +10,10 @@ public record RegistrationResult(long? Id,string? Error);
 
 public static class CreatorRegistration
 {
-    static bool ValidIdentity(LinkedIdentity? identity)=>identity is not null&&identity.Kind is "reddit" or "soundgasm" or "youtube"&&identity.Handle is not null&&Regex.IsMatch(identity.Handle,"^[A-Za-z0-9_-]{1,100}$");
+    static bool ValidIdentity(LinkedIdentity? identity)=>identity is not null
+        &&(identity.Kind is "reddit" or "soundgasm" or "youtube" or "whyp" or "audiochan" or "hotaudio")
+        &&identity.Handle is not null
+        &&Regex.IsMatch(identity.Handle,identity.Kind=="whyp"?"^@?[A-Za-z0-9_-]{1,100}$":"^[A-Za-z0-9_-]{1,100}$");
     public static RegistrationResult Link(Store store,int creatorId,LinkedIdentity identity)
     {
         if(!ValidIdentity(identity))return new(null,"Invalid source identity");

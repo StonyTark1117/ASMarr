@@ -546,7 +546,7 @@ function App() {
         >
           <span className="pulse" />
           <span>{live ? "Connected to server" : "Connecting to server"}</span>
-          <small>ASMarr v0.2.0</small>
+          <small>{status.version ? `ASMarr v${status.version}` : "ASMarr version unavailable"}</small>
         </div>
       </aside>
       <div className="workspace">
@@ -958,6 +958,9 @@ function App() {
                     <option>reddit</option>
                     <option>soundgasm</option>
                     <option>youtube</option>
+                    <option>whyp</option>
+                    <option>audiochan</option>
+                    <option>hotaudio</option>
                   </select>
                   <input
                     name="handle"
@@ -1175,6 +1178,9 @@ function App() {
                         <option>soundgasm</option>
                         <option>reddit</option>
                         <option>youtube</option>
+                        <option>whyp</option>
+                        <option>audiochan</option>
+                        <option>hotaudio</option>
                       </select>
                     </label>
                     <label>
@@ -1904,6 +1910,9 @@ function App() {
                                 "soundgasm",
                                 "youtube",
                                 "reddit",
+                                "whyp",
+                                "audiochan",
+                                "hotaudio",
                               ],
                               directRetries: 3,
                               backlogLimit: 3,

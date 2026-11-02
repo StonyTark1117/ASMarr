@@ -21,6 +21,9 @@ builder.Services.AddSingleton<INotificationProvider,WebhookNotifications>();buil
 builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("reddit",sp.GetRequiredService<ProviderProcess>()));
 builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("soundgasm",sp.GetRequiredService<ProviderProcess>()));
 builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("youtube",sp.GetRequiredService<ProviderProcess>()));
+builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("whyp",sp.GetRequiredService<ProviderProcess>()));
+builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("audiochan",sp.GetRequiredService<ProviderProcess>()));
+builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("hotaudio",sp.GetRequiredService<ProviderProcess>()));
 builder.Services.AddSignalR();builder.Services.AddOpenApi();builder.Services.AddHostedService<Worker>();
 builder.Services.AddSingleton<SessionSecurity>();builder.Services.AddHostedService(sp=>sp.GetRequiredService<SessionSecurity>());
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(System.IO.Path.Combine(store.ConfigRoot,"keys"))).SetApplicationName("ASMarr");
@@ -167,8 +170,8 @@ api.MapPost("/video/interactive-search",(VideoInteractiveSearch search)=> {
     return Results.Accepted(value:new{id=store.Enqueue("search",new{key=search.Key,mediaKind="Video"})});
 });
 api.MapGet("/calendar",()=>store.Query("SELECT key,title,creator,published,state FROM assets a WHERE EXISTS(SELECT 1 FROM creators c WHERE c.name=a.creator) AND published>0 ORDER BY published DESC"));
-api.MapGet("/connectors",()=>new {sources=store.Query("SELECT * FROM sources ORDER BY name"),configuration=new[]{"reddit","soundgasm","youtube","sfw"}.Select(k=>new{kind=k,enabled=store.Setting("source."+k+".enabled","true")=="true"})});
-api.MapPut("/connectors/{kind}",(string kind,JsonElement j)=>{if(kind is not ("reddit" or "soundgasm" or "youtube" or "sfw"))return Results.BadRequest();store.Set("source."+kind+".enabled",j.GetProperty("enabled").GetBoolean()?"true":"false");return Results.Ok();});
+api.MapGet("/connectors",()=>new {sources=store.Query("SELECT * FROM sources ORDER BY name"),configuration=new[]{"reddit","soundgasm","youtube","sfw","whyp","audiochan","hotaudio"}.Select(k=>new{kind=k,enabled=store.Setting("source."+k+".enabled",k=="hotaudio"?"false":"true")=="true"})});
+api.MapPut("/connectors/{kind}",(string kind,JsonElement j)=>{if(kind is not ("reddit" or "soundgasm" or "youtube" or "sfw" or "whyp" or "audiochan" or "hotaudio"))return Results.BadRequest();store.Set("source."+kind+".enabled",j.GetProperty("enabled").GetBoolean()?"true":"false");return Results.Ok();});
 api.MapGet("/connectors/{kind}/configuration",async(string kind,ProviderProcess provider,CancellationToken ct)=> {
     var result=await provider.Run("source-configuration",new{kind},ct);
     return result.TryGetProperty("error",out _)?Results.BadRequest(result):Results.Ok(result);

@@ -215,6 +215,8 @@ def configured_discovery(db,cfg):
     for handle in cfg['soundgasm_creators']:unique_handles.setdefault(handle.casefold(),handle)
     cfg['soundgasm_creators']=list(unique_handles.values())
     cfg['youtube_channels']=[{'creator':r['name'],'channel_id':r['handle']} for r in identities if r['kind']=='youtube']
+    for kind in ('whyp','audiochan','hotaudio'):
+        cfg[kind+'_creators']=list(dict.fromkeys(r['handle'] for r in identities if r['kind']==kind))
     cfg['creator_aliases'].update({r['handle']:r['name'] for r in identities if r['kind']=='reddit'})
     cfg['_identity_creators']={r['kind']+':'+r['handle'].casefold():r['name'] for r in identities}
     monitored={r['name'] for r in identities}
@@ -250,8 +252,8 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
         working.commit();reference.commit();snapshot.close()
     before={r['key'] for r in working.execute('SELECT key FROM assets')}
     baseline_meta=dict(working.execute('SELECT key,value FROM meta'))
-    selected=['reddit','soundgasm','youtube','sfw'] if kind=='all' else [kind]
-    selected=[k for k in selected if setting(db,'source.'+k+'.enabled','true')=='true']
+    selected=['reddit','soundgasm','youtube','sfw','whyp','audiochan','hotaudio'] if kind=='all' else [kind]
+    selected=[k for k in selected if setting(db,'source.'+k+'.enabled','false' if k=='hotaudio' else 'true')=='true']
     active=configured_discovery(db,cfg)
     def profile_rules(creator):
         name=active.get('creator_aliases',{}).get(creator,creator)
@@ -328,14 +330,17 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
             if k not in youtube_fixtures: raise core.youtube.YouTubeError('fixture_missing')
             return youtube_fixtures[k]
         core.youtube.listing=replay_listing
-        try: reference_reports=legacy.discover(reference,legacy_cfg,secrets,capture.replay(),selected,inspect=True)
+        legacy_selected=[source for source in selected if source in {'reddit','soundgasm','youtube','sfw'}]
+        try: reference_reports=legacy.discover(reference,legacy_cfg,secrets,capture.replay(),legacy_selected,inspect=True)
         finally: core.youtube.listing=original_listing
         reference_proposed=[dict(r) for r in reference.execute('SELECT * FROM assets') if r['key'] not in before]
         compare_fields=['name','status','parsed','pages','accepted','items','rejected','backlog_pending']
         simplified=lambda rs:[{k:r.get(k) for k in compare_fields} for r in rs]
         reference_checkpoints={r['key']:r['value'] for r in reference.execute('SELECT * FROM meta') if ('checkpoint' in r['key'] or '_seen:' in r['key']) and original_meta.get(r['key'])!=r['value']}
-        comparison={**deployed_release_identity(),'legacyImplementationSha256':digest(legacy_path),'discoveryParity':sorted(proposed,key=lambda r:r['key'])==sorted(reference_proposed,key=lambda r:r['key']),
-                    'eligibilityAndSourceParity':simplified(reports)==simplified(reference_reports),
+        legacy_proposed=[asset for asset in proposed if asset['source'].split(':')[0] in legacy_selected]
+        legacy_reports=[item for item in reports if item['name'].split(':')[0] in legacy_selected]
+        comparison={**deployed_release_identity(),'legacyImplementationSha256':digest(legacy_path),'discoveryParity':sorted(legacy_proposed,key=lambda r:r['key'])==sorted(reference_proposed,key=lambda r:r['key']),
+                    'eligibilityAndSourceParity':simplified(legacy_reports)==simplified(reference_reports),
                     'checkpointCalculationParity':checkpoint_changes==reference_checkpoints,
                     'productionCheckpointsUnchanged':production_fingerprint()==production_before,
                     'applicationCheckpointsUnchanged':dict(db.execute('SELECT key,value FROM meta'))==app_meta_before,
@@ -457,6 +462,13 @@ def acquire(db,cfg,key):
     production(db); core.require_mount(cfg)
     row=db.execute('SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=? AND c.monitored=1',(key,)).fetchone()
     if not row: raise ValueError('recording_missing_or_unmonitored')
+    source_kind,_,source_handle=row['source'].partition(':')
+    if source_kind in {'whyp','audiochan','hotaudio'}:
+        approved=db.execute('''SELECT 1 FROM identities i JOIN creators c ON c.id=i.creator_id
+                WHERE c.name=? AND c.monitored=1 AND i.enabled=1 AND i.kind=?
+                  AND i.handle=? COLLATE NOCASE''',(row['creator'],source_kind,source_handle)).fetchone()
+        if not approved or creator_removal.excluded(db,row['creator'],[(source_kind,source_handle)]):
+            raise ValueError('source_identity_not_approved')
     if row['state'] not in {'pending','failed','missing'}: return {'status':'already_terminal'}
     if row['saved_path'] and Path(row['saved_path']).is_file():
         s=Path(row['saved_path']);root=Path(cfg['output_root']).resolve()
@@ -789,6 +801,10 @@ def dispatch(operation,args):
             elif kind=='soundgasm': core.sg_listing(core.HTTP(),cfg['soundgasm_creators'][0])
             elif kind=='youtube': core.youtube.listing(cfg['youtube_channels'][0],cfg,1)
             elif kind=='sfw':core.Reddit(core.HTTP(),secrets.get('reddit',{})).authenticate()
+            elif kind in {'whyp','audiochan','hotaudio'}:
+                handles=configured_discovery(db,cfg).get(kind+'_creators',[])
+                if not handles:return {'status':'empty','kind':kind}
+                core.creator_audio_sources.profile_listing(core.HTTP(),kind,handles[0])
             else: raise ValueError('unknown_source')
             return {'status':'healthy','kind':kind}
         if operation=='playlists':

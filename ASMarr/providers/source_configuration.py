@@ -12,6 +12,9 @@ FIELDS = {
     'sfw': {'enabled': False, 'auto_add': False, 'subreddits': [],
             'initial_per_creator': 3, 'reddit_pages': 3, 'max_new_per_run': 12,
             'max_creators': 20, 'max_auto_additions_per_run': 2},
+    'whyp': {},
+    'audiochan': {},
+    'hotaudio': {},
 }
 
 
