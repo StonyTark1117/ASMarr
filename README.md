@@ -94,6 +94,19 @@ and SFW qualification safeguards.
 
 ## Rollout requirements
 
+For the first video release after audio production acceptance,
+`ops/production_upgrade.py` provides a separate production upgrade path. It
+requires the exact green release CI, a matching immutable fixture bundle, an
+accepted unchanged installed artifact, no active commands, and no video opt-ins
+or video work. It backs up the application, database, configuration, evidence,
+service units, and task schedule; holds scheduling; verifies the installed
+replacement with isolated audio/video fixtures and fresh Plex preservation;
+then restores the saved schedule. It does not opt in a creator or approve live
+video acquisition. The old audio acceptance remains historical evidence for its
+original release. On failure it restores the old application without rewriting
+media or the database; unexpected concurrent state changes leave scheduling held
+for review. Do not use the shadow-only deployment tool on production.
+
 The original implementation plan remains the acceptance scope. In particular:
 
 1. Import all 32 creators, 25 source endpoints, and 696 legacy assets without
