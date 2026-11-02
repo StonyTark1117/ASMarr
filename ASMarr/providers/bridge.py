@@ -701,10 +701,19 @@ def process_queue(db,cfg):
         rules=profile(db,row)
         if not json.loads(row['targets'] or '[]') or row['attempts']>=rules.get('directRetries',3):
             if rules.get('fallback',True):
-                found=search(db,row['key'],'Audio')
-                candidate=next((c for c in found['candidates'] if c['autoGrab']),None)
-                if candidate:fallback.append(grab(db,row['key'],candidate))
-                else:event(db,'search-review',row['key'],{'candidates':len(found['candidates'])})
+                try:
+                    found=search(db,row['key'],'Audio')
+                    candidate=next((c for c in found['candidates'] if c['autoGrab']),None)
+                    if candidate:fallback.append(grab(db,row['key'],candidate))
+                    else:event(db,'search-review',row['key'],{'candidates':len(found['candidates'])})
+                except requests.RequestException as exc:
+                    # Indexer/client outages must not starve unrelated direct
+                    # acquisitions. Keep exhausted direct attempts and any
+                    # durable submitting job; never log credential-bearing URLs.
+                    reason='fallback_'+type(exc).__name__
+                    with db:db.execute("UPDATE assets SET state='failed',retry_after=?,error=? WHERE key=?",(now+300,reason,row['key']))
+                    event(db,'fallback-failure',row['key'],{'error':reason,'retryAfter':now+300})
+                    failed.append({'key':row['key'],'error':reason})
             continue
         try:saved.append(acquire(db,cfg,row['key']))
         except Exception as e:

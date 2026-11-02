@@ -168,6 +168,38 @@ class AcquisitionTests(unittest.TestCase):
         with patch.object(b,'search',return_value={'candidates':[{'autoGrab':False}]}),patch.object(b,'grab') as grab,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
             b.process_queue(self.db,self.cfg);grab.assert_not_called()
         self.assertEqual(self.db.execute('SELECT event FROM history').fetchone()[0],'search-review')
+    def test_fallback_timeout_backs_off_without_aborting_other_acquisitions(self):
+        self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0,published=2")
+        second='https://soundgasm.net/u/Creator/second'
+        s.enqueue(self.db,'sg:second','soundgasm:Creator','Creator','Second',[['soundgasm',second]],published=1)
+        with patch.object(b,'search',side_effect=requests.ReadTimeout('https://fixture.invalid/?apikey=fixture-secret')),patch.object(b,'acquire',return_value={'status':'complete'}) as acquire,patch.object(b,'monitor_downloads',return_value={'status':'idle'}) as monitor:
+            result=b.process_queue(self.db,dict(self.cfg,max_downloads_per_run=2))
+        acquire.assert_called_once_with(self.db,dict(self.cfg,max_downloads_per_run=2),second)
+        monitor.assert_called_once()
+        row=self.db.execute('SELECT attempts,retry_after,error FROM assets WHERE key=?',(self.key,)).fetchone()
+        self.assertEqual(row['attempts'],2)
+        self.assertGreater(row['retry_after'],0)
+        self.assertEqual(row['error'],'fallback_ReadTimeout')
+        self.assertEqual(len(result['saved']),1)
+        self.assertEqual(result['failed'],[{'key':self.key,'error':'fallback_ReadTimeout'}])
+        history=self.db.execute('SELECT event,details FROM history').fetchone()
+        self.assertEqual(history['event'],'fallback-failure')
+        self.assertNotIn('fixture-secret',history['details'])
+    def test_fallback_submission_timeout_preserves_durable_job_and_does_not_resubmit(self):
+        self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0")
+        candidate={'guid':'fixture','indexerId':7,'autoGrab':True}
+        def uncertain_submission(*args):
+            self.db.execute("INSERT INTO queue VALUES('q',?,'hash','submitting','qbittorrent','{}','date','Audio')",(self.key,))
+            self.db.commit()
+            raise requests.ReadTimeout('fixture transport uncertainty')
+        with patch.object(b,'search',return_value={'candidates':[candidate]}) as search,patch.object(b,'grab',side_effect=uncertain_submission) as grab,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+            first=b.process_queue(self.db,self.cfg)
+            second=b.process_queue(self.db,self.cfg)
+        self.assertEqual(len(first['failed']),1)
+        self.assertEqual(second['failed'],[])
+        self.assertEqual(search.call_count,1);self.assertEqual(grab.call_count,1)
+        self.assertEqual(self.db.execute('SELECT state FROM queue').fetchone()[0],'submitting')
+        self.assertEqual(self.db.execute('SELECT attempts FROM assets').fetchone()[0],2)
     def test_qbittorrent_outage_preserves_job(self):
         self.db.execute("INSERT INTO queue VALUES('q',?,'hash','downloading','qbittorrent','{}','date','Audio')",(self.key,))
         with patch.object(b,'qbit',side_effect=requests.ConnectionError('offline')),self.assertRaises(requests.ConnectionError):b.monitor_downloads(self.db,self.cfg)
