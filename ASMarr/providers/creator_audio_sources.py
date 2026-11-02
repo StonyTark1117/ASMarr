@@ -18,7 +18,8 @@ AUDIOCHAN_UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
 def audiochan_requires_tier(item):
     """Reject tracks whose current public metadata requires paid access."""
     return (any(item.get(key) for key in ('required_tier_id', 'requiredTierId',
-                                         'required_tier', 'requiredTier'))
+                                         'required_tier', 'requiredTier',
+                                         'required_patreon_tier', 'requiredPatreonTier'))
             or any(item.get(key) is True for key in ('is_locked', 'isLocked', 'locked')))
 
 
