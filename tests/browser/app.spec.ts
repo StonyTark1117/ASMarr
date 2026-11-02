@@ -890,7 +890,7 @@ test("bulk removal rejects stale selection and reports partial queue failure wit
   await page.route(`**/api/v1/creators/${ids[1]}/remove`, route => route.fulfill({ status: 409, json: { error: "Fixture queue conflict" } }));
   await dialog.getByRole("button", { name: "Remove creators, keep files", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "Removal results", exact: true })).toBeVisible({ timeout: 30000 });
-  await expect(dialog.getByText("Not queued; this creator was not removed by this request.")).toBeVisible();
+  await expect(dialog.getByText("No queue confirmation received. Check System → Tasks before retrying; an interrupted response can leave a removal running.")).toBeVisible();
   await expect(dialog.getByRole("alert").first()).toContainText("Fixture queue conflict");
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await expect(page.getByRole("button", { name: names[0], exact: true })).toHaveCount(0);

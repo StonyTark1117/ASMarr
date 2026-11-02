@@ -2663,7 +2663,7 @@ function BulkCreatorRemovalDialog({ creatorIds, onClose }: { creatorIds: number[
     <h2 id="bulk-removal-title">{jobs.length ? allSucceeded ? "Creators removed" : busy ? "Removing selected creators" : "Removal results" : `Remove ${creatorIds.length} selected creators`}</h2>
     {error && <p role="alert" className="removal-warning">{error}</p>}
     {jobs.length ? <>
-      <p role="status">{completed.length} of {creatorIds.length} creators removed. {queueing ? "Queueing reviewed removals…" : busy ? "Queued removals continue safely in the background." : "Review each result below."}</p>
+      <p role="status">{completed.length} of {creatorIds.length} removals confirmed. {queueing ? "Queueing reviewed removals…" : busy ? "Queued removals continue safely in the background." : "Review each result below."}</p>
       <div className="bulk-removal-results">{plans.map(plan => {
         const job = jobs.find(row => row.creatorId === plan.creatorId);
         const command = job && commands[job.id];
@@ -2677,7 +2677,7 @@ function BulkCreatorRemovalDialog({ creatorIds, onClose }: { creatorIds: number[
             {result.plex?.status === "cleanup_pending" && <p role="alert">Plex cleanup needs attention. Review this removal in System → Tasks.</p>}
           </>}
           {command?.error && <p role="alert">{command.error}</p>}
-          {!job && <p>Not queued; this creator was not removed by this request.</p>}
+          {!job && <p>No queue confirmation received. Check System → Tasks before retrying; an interrupted response can leave a removal running.</p>}
         </section>;
       })}</div>
       <p className="muted">Completed removals are not undone if another fails. Close after completion to keep failed or unqueued creators selected. Background results remain in System → Tasks. Download-client originals are kept.</p>

@@ -148,6 +148,8 @@ deleting files. Each creator uses the same individually validated, durable
 removal operation. Results and failures are shown per creator; already queued
 work continues if another request fails. Closing completed results clears only
 successful selections, keeping failed/unqueued creators selected for review.
+If a response is interrupted, check System → Tasks before retrying: the server
+may have accepted the operation even though the browser received no confirmation.
 Closing while jobs run clears the queued selections; their results remain in
 System → Tasks. **Clear selection** cancels the checkbox selection, not jobs.
 
