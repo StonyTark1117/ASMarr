@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -54,6 +55,8 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(first['artifactSha256'],result['artifactSha256'])
         self.assertTrue((output/'application/ops/admin_login.py').is_file())
         self.assertEqual(0o755,(output/'application/toolchain/deno').stat().st_mode&0o777)
+        with tarfile.open(first['productionPayload']) as archive:
+            self.assertIn('ASMarr',archive.getnames());self.assertNotIn('application/ASMarr',archive.getnames())
 
     def test_bad_checksum_and_tampered_toolchain_rejected(self):
         package=self.package();output=self.root/'bad';output.mkdir()

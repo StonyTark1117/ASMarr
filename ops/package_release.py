@@ -99,10 +99,17 @@ def build(repository,publish,toolchain,output,commit,version):
             info=tarfile.TarInfo(name);info.size=len(data);info.mode=mode;info.mtime=epoch
             archive.addfile(info,io.BytesIO(data))
     checksum=hashlib.sha256(target.read_bytes()).hexdigest()
+    payload=output/('asmarr-'+version+'-production-payload.tar.gz')
+    with payload.open('xb') as raw,gzip.GzipFile(fileobj=raw,mode='wb',mtime=epoch,filename='') as zipped,tarfile.open(fileobj=zipped,mode='w') as archive:
+        for name,(data,mode) in sorted(files.items()):
+            if not name.startswith('application/'):continue
+            info=tarfile.TarInfo(name.removeprefix('application/'));info.size=len(data);info.mode=mode;info.mtime=epoch
+            archive.addfile(info,io.BytesIO(data))
+    payload_checksum=hashlib.sha256(payload.read_bytes()).hexdigest()
     sums=output/'SHA256SUMS'
-    with sums.open('x') as stream:stream.write(checksum+'  '+target.name+'\n')
+    with sums.open('x') as stream:stream.write(checksum+'  '+target.name+'\n'+payload_checksum+'  '+payload.name+'\n')
     with (output/'release.json').open('x') as stream:json.dump({k:v for k,v in manifest.items() if k!='files'},stream,indent=2)
-    return {'package':str(target),'sha256':checksum,'artifactSha256':manifest['artifactSha256'],'sourceCommit':commit}
+    return {'package':str(target),'sha256':checksum,'productionPayload':str(payload),'productionPayloadSha256':payload_checksum,'artifactSha256':manifest['artifactSha256'],'sourceCommit':commit}
 
 
 if __name__=='__main__':

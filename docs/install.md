@@ -16,8 +16,9 @@ not a blank database. See the [historical audit guide](rollout-audit.md).
 
 Prepare:
 
-1. Dedicated audio and video folders under `/mnt` or `/srv`, on mounted storage.
+1. Empty, dedicated audio and video folders under `/mnt` or `/srv`, on mounted storage.
    They must not overlap. Keep media separate from application/configuration.
+   Existing libraries need deliberate import/migration, not a fresh install.
 2. A dedicated Plex **Music** library for audio and **Other Videos** for video.
    Ensure Plex can access the same media paths (or the intended matching mounts).
 3. A valid server certificate/key for the actual hostname/IP you will use.

@@ -117,6 +117,10 @@ matching installed fixtures, backup and pre/post library/Plex preservation check
 For existing video state, keep the `--preserve-existing-video` and exact prior
 proof requirements. Removal releases also require their installed fixtures.
 See [operator audit details](rollout-audit.md#production-upgrades).
+Use the release's `asmarr-VERSION-production-payload.tar.gz` as the audited
+upgrader payload; the `linux-x64.tar.gz` archive is the fresh-install bundle.
+Both are checksummed and contain the same application tree. Neither archive
+alone bypasses CI, installed-fixture, backup or preservation gates.
 
 After an update verify login/HTTPS, creator and task settings, normal discovery,
 backup/off-host copy, queue work, and Plex/playlists. An application rollback must

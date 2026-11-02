@@ -61,6 +61,7 @@ def install(package,sha,certificate,key,recipient,audio,video,host,ca=None,prefi
     prefix=Path(prefix)
     audio,video=media_root(audio),media_root(video)
     if audio.is_relative_to(video) or video.is_relative_to(audio):raise ValueError('Media roots overlap')
+    if any(audio.iterdir()) or any(video.iterdir()):raise ValueError('Fresh installation needs empty dedicated media roots; existing media requires import/migration')
     app=prefix/'opt/asmarr';config=prefix/'etc/asmarr';state=prefix/'var/lib/asmarr';unit=prefix/'etc/systemd/system/asmarr.service'
     for target in (app,config,state,unit,prefix/'var/lib/asmr-scraper/state.db'):
         if target.exists() or target.is_symlink():raise ValueError('Existing installation/state detected; use migration or audited upgrade instead')
