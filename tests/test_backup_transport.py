@@ -1,5 +1,6 @@
 """Restricted export and verified pull, with fake SSH transport (no network)."""
 import contextlib
+from datetime import datetime,timezone,timedelta
 import hashlib
 import importlib.util
 import io
@@ -93,6 +94,14 @@ class BackupTransportTests(unittest.TestCase):
         args,kwargs=run.call_args
         self.assertIn('StrictHostKeyChecking=yes',args[0]);self.assertIn('BatchMode=yes',args[0])
         self.assertNotIn('shell',kwargs)
+
+    def test_fresh_pull_receipt_does_not_claim_an_old_source_backup_is_fresh(self):
+        old=(datetime.now(timezone.utc)-timedelta(days=3)).strftime('%Y%m%dT%H%M%S%fZ')
+        self.names=['asmarr-full-'+old+'-00000001.cms']
+        self.rows=[{'name':self.names[0],'size':len(self.data),'sha256':hashlib.sha256(self.data).hexdigest()}]
+        with patch.object(puller,'ssh',side_effect=self.transport):result=puller.pull(self.policy)
+        self.assertFalse(result['sourceBackupFresh']);self.assertTrue(result['encryptedOnly'])
+        self.assertGreater(result['sourceBackupAgeSeconds'],36*3600)
 
 
 if __name__=='__main__':unittest.main()

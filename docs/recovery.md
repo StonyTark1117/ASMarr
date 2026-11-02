@@ -37,6 +37,9 @@ The server needs the public recipient certificate, not a decryption password.
 Local retention keeps the newest 14 complete encrypted bundles by default;
 `keepLocal` accepts 2–365. Incomplete snapshots never displace completed backups.
 Existing legacy `.db` backups are retained and are **database-only**.
+Full bundles require a hold-aware ASMarr 0.3.0-or-later application; older
+binaries cannot safely honor the restore hold and are rejected rather than
+silently booted against recovered queued work.
 
 Do not put the recovery key inside the directory being backed up. Protect
 recovery bundles even though encrypted, and restore only bundles from a trusted
@@ -82,6 +85,10 @@ sleeping destination cannot receive backups: monitor its last successful copy.
 Every transferred file is checked against the source's size and SHA-256 before
 publication. Failed transfers retain older copies and do not run retention.
 The destination's `last-pull.json` records the latest verified file and time.
+It also records the source backup's actual creation time/age. A new copy receipt
+does not make an old backup fresh: source age over 36 hours (or a clock more than
+five minutes ahead) returns a nonzero status even when the encrypted copy itself
+verified successfully.
 Default off-host retention is 30 completed bundles (configurable 2–365).
 
 `packaging/asmarr-backup-pull.service` and `.timer` provide an hourly systemd

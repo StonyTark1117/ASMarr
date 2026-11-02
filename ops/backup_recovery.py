@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
@@ -95,7 +96,7 @@ def restore(bundle, key, output):
             if manifest_member.size > 4 * 1024 ** 2:
                 raise ValueError('Recovery manifest too large.')
             manifest = json.load(archive.extractfile(manifest_member))
-            if manifest.get('format') != 1 or set(manifest.get('files', {})) != names - {'manifest.json'}:
+            if manifest.get('format') != 1 or manifest.get('restoreHoldAware') is not True or set(manifest.get('files', {})) != names - {'manifest.json'}:
                 raise ValueError('Recovery manifest scope mismatch.')
             for member in members:
                 target = destination / member.name
@@ -114,6 +115,12 @@ def restore(bundle, key, output):
         required = ['config/auth.json', 'state/asmarr.db', 'application/ASMarr']
         if not all((destination / name).is_file() for name in required):
             raise ValueError('Incomplete recovery bundle.')
+        identity = json.loads((destination / 'application/build-identity.json').read_text())
+        version = identity.get('version','')
+        if (identity != manifest.get('applicationIdentity') or not re.fullmatch(r'\d+\.\d+\.\d+',version)
+                or tuple(map(int,version.split('.'))) < (0,3,0)
+                or not re.fullmatch('[a-f0-9]{40}',identity.get('sourceCommit',''))):
+            raise ValueError('Recovered binary must support the worker recovery hold.')
         db_path = destination / 'state/asmarr.db'
         with contextlib.closing(sqlite3.connect(db_path)) as db:
             if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':

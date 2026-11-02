@@ -75,8 +75,14 @@ def pull(policy):
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1: raise ValueError('unsafe_retention_target')
         path.unlink(); pruned += 1
     latest = max(rows, key=lambda r: r['name'])
+    created = datetime.strptime(latest['name'][len('asmarr-full-'):].split('-',1)[0],
+                                '%Y%m%dT%H%M%S%fZ').replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc)-created).total_seconds()
+    fresh = -300 <= age <= 36*3600
     report = {'verifiedAt': datetime.now(timezone.utc).isoformat(), 'copied': copied,
               'pruned': pruned, 'retention': keep, 'latest': latest,
+              'sourceBackupCreatedAt':created.isoformat(),'sourceBackupAgeSeconds':int(age),
+              'sourceBackupFresh':fresh,'status':'verified' if fresh else 'copied-source-backup-overdue-or-clock-invalid',
               'encryptedOnly': True, 'restoreStillRequiresRecoveryKey': True}
     fd, temporary = tempfile.mkstemp(prefix='.receipt-', dir=destination)
     try:
@@ -95,8 +101,9 @@ def main(argv=None):
         path = args.policy
         if not stat.S_ISREG(path.lstat().st_mode) or path.stat().st_mode & 0o077:
             raise ValueError('private_policy_required')
-        print(json.dumps(pull(json.loads(path.read_text())), indent=2))
-        return 0
+        report=pull(json.loads(path.read_text()))
+        print(json.dumps(report, indent=2))
+        return 0 if report['sourceBackupFresh'] else 2
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         print('Off-host copy failed. Existing backups retained; check SSH trust, destination space and private policy.')
         return 1

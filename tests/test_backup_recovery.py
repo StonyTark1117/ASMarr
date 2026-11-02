@@ -42,6 +42,7 @@ class BackupRecoveryTests(unittest.TestCase):
         self.config = self.root / 'config'; self.config.mkdir(mode=0o700)
         self.app = self.root / 'application'; self.app.mkdir()
         (self.app / 'ASMarr').write_text('fixture app'); (self.app / 'ASMarr').chmod(0o700)
+        (self.app / 'build-identity.json').write_text(json.dumps({'version':'0.3.0','sourceCommit':'a'*40}))
         (self.config / 'auth.json').write_text(json.dumps({'apiKey': secrets.token_hex(32)}))
         (self.config / 'backup-policy.json').write_text('{"keepLocal":2}')
         (self.config / 'backup-policy.json').chmod(0o600)
@@ -135,6 +136,11 @@ class BackupRecoveryTests(unittest.TestCase):
     def test_missing_recipient_never_silently_falls_back_to_plaintext(self):
         (self.config / 'backup-recipient.pem').unlink()
         with self.assertRaises(FileNotFoundError): self.create()
+        self.assertFalse((self.state / 'backups').exists())
+
+    def test_old_binary_cannot_be_packaged_as_safely_held_full_recovery(self):
+        (self.app / 'build-identity.json').write_text(json.dumps({'version':'0.2.0','sourceCommit':'a'*40}))
+        with self.assertRaises(ValueError):self.create()
         self.assertFalse((self.state / 'backups').exists())
 
     def test_configuration_change_during_snapshot_fails_and_keeps_prior_backup(self):

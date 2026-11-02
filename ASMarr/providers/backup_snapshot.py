@@ -88,6 +88,14 @@ def prune(folder, keep):
 def create(state, config, application=None, service_root=Path('/etc/systemd/system')):
     state, config = Path(state), Path(config)
     application = Path(application or Path(__file__).resolve().parents[1])
+    identity_path = application / 'build-identity.json'
+    regular(identity_path)
+    identity = json.loads(identity_path.read_text())
+    version = identity.get('version', '')
+    if (not re.fullmatch(r'\d+\.\d+\.\d+', version)
+            or tuple(map(int, version.split('.'))) < (0, 3, 0)
+            or not re.fullmatch('[a-f0-9]{40}', identity.get('sourceCommit',''))):
+        raise ValueError('full_recovery_requires_hold_aware_release_0_3_or_later')
     policy_path = config / 'backup-policy.json'
     regular(policy_path)
     if policy_path.stat().st_mode & 0o077:
@@ -133,7 +141,8 @@ def create(state, config, application=None, service_root=Path('/etc/systemd/syst
                 files.update(inventory(overrides, 'service/asmarr.service.d'))
             if sum(f['size'] for f in files.values()) > MAX_TOTAL:
                 raise ValueError('backup_total_size_limit')
-            manifest = {'format': 1, 'createdAt': datetime.now(timezone.utc).isoformat(),
+            manifest = {'format': 1, 'restoreHoldAware': True, 'applicationIdentity': identity,
+                        'createdAt': datetime.now(timezone.utc).isoformat(),
                         'scope': 'application, database, protected configuration, service; no media or OS dependencies',
                         'files': {k: {a: v for a, v in f.items() if a != 'path'} for k, f in files.items()}}
             plain = scratch / 'bundle.tar.gz'
