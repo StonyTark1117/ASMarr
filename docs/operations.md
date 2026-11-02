@@ -54,6 +54,12 @@ Daily discovery, disk scans, playlists and backups run internally; queue/health/
 Plex reconciliation run more often. Scheduling enabled is not proof a cycle
 completed. Verify actual command timestamps/results after installation or updates.
 
+Backups are optional for a deployment that has its own recovery arrangements.
+If you choose not to use ASMarr backups, disable the **backup** schedule in
+**System → Tasks**. Do not leave it enabled without a configured encryption
+recipient: backup creation deliberately fails closed. No off-host transfer is
+configured automatically. See [recovery](recovery.md) when enabling backups later.
+
 ## Common problems
 
 ### Cannot sign in

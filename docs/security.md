@@ -38,6 +38,23 @@ secure/HTTP-only/same-site cookies, mutation-origin checks, and login throttling
 
 ## Trusted HTTPS
 
+### Existing reverse proxy
+
+You can use an existing certificate-managed HTTPS reverse proxy instead of
+issuing another public certificate for ASMarr. To serve the app at a URL path,
+set `Environment=ASMARR_URL_BASE=/asmarr` in a systemd service override and restart
+after validating the configuration. The proxy must preserve that prefix when
+forwarding requests, including `/asmarr/api/v1/events` for live updates.
+Use the existing sign-on gate if applicable. Keep the upstream connection on
+HTTPS and trust its certificate explicitly; do not disable certificate checking.
+Verify the public certificate, sign-in, assets, API calls, and live updates through
+the proxy. No private deployment domains or addresses belong in public source.
+
+The default URL base is `/`; configured prefixes must start with `/` and have no
+trailing slash. Authentication cookies remain Secure, HttpOnly and host-only with
+path `/`, as required by their `__Host-` name. ASMarr still requires its own login;
+proxy sign-on does not automatically grant an application session.
+
 A self-signed leaf certificate is encrypted HTTPS but is not automatically
 trusted. Clicking through warnings does not establish a trusted deployment.
 

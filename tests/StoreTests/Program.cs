@@ -8,6 +8,13 @@ Environment.SetEnvironmentVariable("ASMARR_CONFIG",Path.Combine(root,"config"));
 var store=new Store();store.Initialize();store.Initialize();
 int assertions=0;
 void Assert(bool condition,string name){if(!condition)throw new InvalidOperationException(name);assertions++;Console.WriteLine("PASS "+name);}
+Assert(WebDeployment.UrlBase(null)==""&&WebDeployment.UrlBase("/")=="","default URL base remains root");
+Assert(WebDeployment.UrlBase("/apps/asmarr")=="/apps/asmarr","nested URL base is supported");
+foreach(var invalid in new[]{"asmarr","/asmarr/","//host","/../escape","/x?query","/x\"onclick"})
+{
+    bool rejected=false;try{WebDeployment.UrlBase(invalid);}catch(InvalidOperationException){rejected=true;}
+    Assert(rejected,"invalid URL base is rejected: "+invalid);
+}
 Assert(store.Query("PRAGMA integrity_check")[0].Values.First()!.ToString()=="ok","migrations retain database integrity");
 Assert(store.Query("PRAGMA journal_mode")[0].Values.First()!.ToString()=="wal","database uses WAL");
 Assert(store.Query("SELECT * FROM schema_migrations").Count==2,"repeat migration is idempotent");

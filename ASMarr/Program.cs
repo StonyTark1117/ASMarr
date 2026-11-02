@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.SignalR;
 using System.Threading.RateLimiting;
 
 var builder=WebApplication.CreateBuilder(args);
+var urlBase=WebDeployment.UrlBase(Environment.GetEnvironmentVariable("ASMARR_URL_BASE"));
 builder.Logging.ClearProviders();builder.Logging.AddJsonConsole();
 var store=new Store();store.Initialize();
 builder.Services.AddSingleton(store);
@@ -24,7 +25,7 @@ builder.Services.AddSignalR();builder.Services.AddOpenApi();builder.Services.Add
 builder.Services.AddSingleton<SessionSecurity>();builder.Services.AddHostedService(sp=>sp.GetRequiredService<SessionSecurity>());
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(System.IO.Path.Combine(store.ConfigRoot,"keys"))).SetApplicationName("ASMarr");
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(o=> {
-    o.Cookie.Name="__Host-ASMarr";o.Cookie.HttpOnly=true;o.Cookie.SecurePolicy=CookieSecurePolicy.Always;o.Cookie.SameSite=SameSiteMode.Strict;
+    o.Cookie.Name="__Host-ASMarr";o.Cookie.Path="/";o.Cookie.HttpOnly=true;o.Cookie.SecurePolicy=CookieSecurePolicy.Always;o.Cookie.SameSite=SameSiteMode.Strict;
     o.ExpireTimeSpan=TimeSpan.FromHours(12);o.SlidingExpiration=true;
     o.Events.OnRedirectToLogin=c=>{c.Response.StatusCode=401;return Task.CompletedTask;};
     o.Events.OnRedirectToAccessDenied=c=>{c.Response.StatusCode=403;return Task.CompletedTask;};
@@ -49,6 +50,8 @@ if(!File.Exists(authPath))
 JsonElement Auth()=>JsonDocument.Parse(File.ReadAllText(authPath)).RootElement.Clone();
 bool Equal(string a,string b)=>CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a),Encoding.UTF8.GetBytes(b));
 var app=builder.Build();
+if(urlBase.Length>0)app.UsePathBase(urlBase);
+app.UseRouting();
 app.Use(async(context,next)=> {
     context.Response.Headers["X-Content-Type-Options"]="nosniff";context.Response.Headers["X-Frame-Options"]="DENY";context.Response.Headers["Referrer-Policy"]="same-origin";
     context.Response.Headers["Content-Security-Policy"]="default-src 'self'; connect-src 'self' wss:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'";
@@ -68,7 +71,17 @@ app.Use(async(context,next)=> {
     }
     await next();
 });
-app.UseAuthorization();app.UseDefaultFiles();app.UseStaticFiles();
+app.UseAuthorization();
+app.Use(async(context,next)=> {
+    if(context.Request.Method=="GET"&&context.Request.Path.Value is "/" or "/index.html")
+    {
+        if(urlBase.Length>0&&!context.Request.PathBase.HasValue){context.Response.Redirect(urlBase+"/");return;}
+        context.Response.ContentType="text/html; charset=utf-8";
+        await context.Response.WriteAsync(WebDeployment.Index(app.Environment.WebRootPath,urlBase));return;
+    }
+    await next();
+});
+app.UseStaticFiles();
 app.MapGet("/healthz",()=>Results.Ok(new {application="ASMarr",status="ok"}));
 app.MapPost("/api/v1/auth/login",async(HttpContext context,Login input)=> {
     if(context.Request.Headers["X-ASMarr-Request"]!="1")return Results.StatusCode(403);
@@ -83,7 +96,7 @@ api.MapPost("/creators",(NewCreator creator)=> {
     var result=CreatorRegistration.Create(store,creator);
     if(result.Error is not null)return Results.BadRequest(new{error=result.Error});
     string? commandId=creator.MonitorVideo?store.Enqueue("video-backfill",new{creatorId=result.Id}):null;
-    return Results.Created("/api/v1/creators/"+result.Id,new{id=result.Id,backfillCommandId=commandId});
+    return Results.Created(urlBase+"/api/v1/creators/"+result.Id,new{id=result.Id,backfillCommandId=commandId});
 });
 api.MapGet("/auth",(HttpContext c)=>new {username=c.User.Identity!.Name});
 api.MapPost("/auth/logout",async(HttpContext c)=>{await c.SignOutAsync();return Results.NoContent();});
@@ -130,7 +143,7 @@ api.MapPost("/creators/mass-edit",(MassEdit m)=> {var error=CreatorBatch.Apply(s
 api.MapGet("/identities",()=>store.Query("SELECT i.*,c.name AS creator FROM identities i JOIN creators c ON c.id=i.creator_id ORDER BY c.name,i.kind"));
 api.MapPost("/identities",(IdentityEdit i)=> {
     var result=CreatorRegistration.Link(store,i.CreatorId,new(i.Kind,i.Handle,i.Enabled));
-    return result.Error is null?Results.Created("/api/v1/identities/"+result.Id,new{id=result.Id}):Results.BadRequest(new{error=result.Error});
+    return result.Error is null?Results.Created(urlBase+"/api/v1/identities/"+result.Id,new{id=result.Id}):Results.BadRequest(new{error=result.Error});
 });
 api.MapPut("/identities/{id:int}",(int id,JsonElement j)=>{store.Execute("UPDATE identities SET enabled=$enabled WHERE id=$id",("id",id),("enabled",j.GetProperty("enabled").GetBoolean()?1:0));return Results.Ok();});
 api.MapGet("/recordings",(string? creator,string? state,string? q,int? limit,int? offset)=>store.Query("SELECT a.*,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Audio') AS audio_state,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Video') AS video_state FROM assets a WHERE EXISTS(SELECT 1 FROM creators c WHERE c.name=a.creator) AND ($creator IS NULL OR creator=$creator) AND ($state IS NULL OR state=$state OR EXISTS(SELECT 1 FROM media_assets m WHERE m.recording_key=a.key AND m.state=$state)) AND ($q IS NULL OR title LIKE '%'||$q||'%' OR creator LIKE '%'||$q||'%') ORDER BY COALESCE(published,acquired,0) DESC LIMIT $limit OFFSET $offset",("creator",creator),("state",state),("q",q),("limit",Math.Clamp(limit??200,1,1000)),("offset",Math.Max(0,offset??0))));
@@ -169,7 +182,7 @@ api.MapPost("/profiles",(ProfileEdit p)=> {
     if(string.IsNullOrWhiteSpace(p.Name)||p.Name.Length>100)return Results.BadRequest(new{error="Profile name must contain 1–100 characters"});
     var error=ValidateProfile(p.Settings);if(error!=null)return Results.BadRequest(new{error});
     var id=store.Query("INSERT INTO profiles(name,settings) VALUES($name,$settings) RETURNING id",("name",p.Name.Trim()),("settings",p.Settings.GetRawText()))[0]["id"];
-    return Results.Created("/api/v1/profiles/"+id,new{id});
+    return Results.Created(urlBase+"/api/v1/profiles/"+id,new{id});
 });
 api.MapPut("/profiles/{id:int}",(int id,ProfileEdit p)=>{var error=ValidateProfile(p.Settings);if(error!=null)return Results.BadRequest(new{error});store.Execute("UPDATE profiles SET name=$name,settings=$settings WHERE id=$id",("id",id),("name",p.Name),("settings",p.Settings.GetRawText()));return Results.Ok();});
 api.MapGet("/video/profiles",()=>store.Query("SELECT * FROM video_quality_profiles ORDER BY id"));
@@ -235,7 +248,7 @@ api.MapGet("/backups",()=>Directory.EnumerateFiles(System.IO.Path.Combine(store.
 api.MapGet("/shadow-cycles",()=>store.Query("SELECT * FROM shadow_cycles ORDER BY id DESC"));
 api.MapGet("/system/updates",()=>new {version=typeof(Store).Assembly.GetName().Version?.ToString(3)??"unknown",automatic=false,channel="local",message="Updates are installed through an audited deployment"});
 app.MapHub<StatusHub>("/api/v1/events").RequireAuthorization();app.MapOpenApi().RequireAuthorization();
-app.MapFallbackToFile("index.html");app.Run();
+app.MapFallback(()=>Results.Content(WebDeployment.Index(app.Environment.WebRootPath,urlBase),"text/html; charset=utf-8"));app.Run();
 
 static object Disk(string path) {try{var drive=DriveInfo.GetDrives().Where(d=>path.StartsWith(d.Name,StringComparison.Ordinal)).OrderByDescending(d=>d.Name.Length).First();return new{available=drive.AvailableFreeSpace,total=drive.TotalSize};}catch{return new{available=0L,total=0L};}}
 static bool RootsOverlap(string first,string second){if(!System.IO.Path.IsPathFullyQualified(first)||!System.IO.Path.IsPathFullyQualified(second))return false;var a=System.IO.Path.GetFullPath(first).TrimEnd(System.IO.Path.DirectorySeparatorChar)+System.IO.Path.DirectorySeparatorChar;var b=System.IO.Path.GetFullPath(second).TrimEnd(System.IO.Path.DirectorySeparatorChar)+System.IO.Path.DirectorySeparatorChar;return a.StartsWith(b,StringComparison.Ordinal)||b.StartsWith(a,StringComparison.Ordinal);}

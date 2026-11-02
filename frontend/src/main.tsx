@@ -44,7 +44,7 @@ const routes = [
   ["System", Server],
 ] as const;
 async function api(path: string, method = "GET", body?: unknown) {
-  const r = await fetch("/api/v1/" + path, {
+  const r = await fetch(new URL("api/v1/" + path, document.baseURI), {
     method,
     headers: { "Content-Type": "application/json", "X-ASMarr-Request": "1" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -150,7 +150,7 @@ function App() {
   useEffect(() => {
     if (!auth) return;
     const hub = new HubConnectionBuilder()
-      .withUrl("/api/v1/events", { headers: { "X-ASMarr-Request": "1" } })
+      .withUrl(new URL("api/v1/events", document.baseURI).href, { headers: { "X-ASMarr-Request": "1" } })
       .withAutomaticReconnect()
       .configureLogging(LogLevel.Error)
       .build();
