@@ -103,6 +103,18 @@ class CreatorAudioSourceTests(unittest.TestCase):
                                         Response(body={'url': 'http://stream.audiochan.com/path'})]),
                                   'audiochan', 'https://audiochan.com/a/ABC123')
 
+    def test_audiochan_rechecks_tier_after_discovery_before_playback(self):
+        public = {'id': 'audio-id', 'visibility': 'public', 'status': 'published',
+                  'audioFile': {'id': 'file-id'}}
+        for detail in (dict(public, required_tier_id='paid-tier'),
+                       dict(public, requiredTierId='paid-tier'),
+                       dict(public, audioFile={'id': 'file-id', 'isLocked': True})):
+            with self.subTest(detail=detail):
+                http = HTTP([Response(), Response(body=detail)])
+                with self.assertRaisesRegex(sources.SourceFailure, 'audio_unavailable'):
+                    sources.resolve_audio(http, 'audiochan', 'https://audiochan.com/a/ABC123')
+                self.assertEqual([call[0] for call in http.calls], ['POST', 'GET'])
+
     def test_hotaudio_uses_separate_browser_capture(self):
         with self.assertRaisesRegex(sources.SourceFailure, 'requires_browser_capture'):
             sources.resolve_audio(HTTP([]), 'hotaudio', 'https://hotaudio.net/u/creator/post')

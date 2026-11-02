@@ -15,6 +15,13 @@ AUDIOCHAN_UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
                 '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
 
+def audiochan_requires_tier(item):
+    """Reject tracks whose current public metadata requires paid access."""
+    return (any(item.get(key) for key in ('required_tier_id', 'requiredTierId',
+                                         'required_tier', 'requiredTier'))
+            or any(item.get(key) is True for key in ('is_locked', 'isLocked', 'locked')))
+
+
 class TrackLinks(HTMLParser):
     def __init__(self, prefix, marker):
         super().__init__(convert_charrefs=True)
@@ -103,7 +110,7 @@ def profile_listing(http, kind, handle):
                     continue
                 if item.get('visibility') != 'public' or item.get('status') != 'published':
                     continue
-                if item.get('required_tier_id') or not item.get('audio_file_id'):
+                if audiochan_requires_tier(item) or not item.get('audio_file_id'):
                     continue
                 slug, title, identity = item.get('slug'), item.get('title'), item.get('id')
                 if not (isinstance(slug, str) and re.fullmatch(r'[A-Za-z0-9_-]{5,100}', slug)
@@ -154,7 +161,9 @@ def resolve_audio(http, kind, url):
         identity = item.get('id') if isinstance(item, dict) else None
         audio_file = item.get('audioFile') if isinstance(item, dict) else None
         file_id = audio_file.get('id') if isinstance(audio_file, dict) else None
-        if not identity or not file_id or item.get('visibility') != 'public' or item.get('status') != 'published':
+        if (not identity or not file_id or item.get('visibility') != 'public'
+                or item.get('status') != 'published' or audiochan_requires_tier(item)
+                or audiochan_requires_tier(audio_file)):
             raise SourceFailure('audiochan_audio_unavailable')
         with http.request('POST', 'https://api.audiochan.com/audios/' + identity + '/play-intent',
                           json={'file_id': file_id}, headers=headers) as response:
