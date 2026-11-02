@@ -139,6 +139,18 @@ class CreatorRemovalTests(unittest.TestCase):
         self.assertEqual([],self.run_remove(delete=True)['deleted'])
         self.assertTrue(self.root.is_dir())
 
+    def test_filesystem_root_and_nonmedia_tracked_files_are_not_deletion_targets(self):
+        self.cfg['output_root']='/'
+        self.assertEqual([],self.run_remove(delete=True)['deleted'])
+        self.assertTrue(self.path.exists())
+
+    def test_nonmedia_tracked_file_is_preserved_even_inside_the_library(self):
+        nonmedia=self.audio/'private-config.json';nonmedia.write_text('{}')
+        self.db.execute("UPDATE assets SET saved_path=? WHERE key='owned'",(str(nonmedia),))
+        self.db.execute("UPDATE media_assets SET saved_path=? WHERE recording_key='owned'",(str(nonmedia),));self.db.commit()
+        self.assertEqual([],self.run_remove(delete=True)['deleted'])
+        self.assertTrue(nonmedia.exists())
+
     def test_delete_failure_reports_preserved_file(self):
         with patch.object(removal.os,'unlink',side_effect=PermissionError('denied')):
             result=self.run_remove(delete=True)

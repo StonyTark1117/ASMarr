@@ -38,9 +38,10 @@ def owned_paths(db, name):
 
 
 def root_for(path, kind, cfg):
+    extensions = {'.m4a','.mp3','.aac','.opus','.flac','.wav'} if kind == 'Audio' else {'.mp4','.mkv','.webm','.mov','.m4v'} if kind == 'Video' else set()
     root = Path(cfg['video_root'] if kind == 'Video' else cfg['output_root'])
     candidate = Path(path)
-    if not root.is_absolute() or not candidate.is_absolute() or '..' in candidate.parts:
+    if not root.is_absolute() or root == Path('/') or not candidate.is_absolute() or '..' in candidate.parts or candidate.suffix.lower() not in extensions:
         raise ValueError('outside_library_root')
     relative = candidate.relative_to(root)
     if not relative.parts:
