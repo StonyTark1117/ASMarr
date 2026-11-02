@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import bridge as b
+import creator_audio_sources
 import scraper as s
 import sfw_sources
 import youtube_source
@@ -13,6 +14,37 @@ from categories import classify
 
 
 class ProviderTests(unittest.TestCase):
+    def test_monitored_creator_audio_identities_enqueue_owned_recordings(self):
+        with tempfile.TemporaryDirectory() as root:
+            db=s.open_db(Path(root)/'state.db')
+            db.executescript('''CREATE TABLE creators(id INTEGER PRIMARY KEY,name TEXT,monitored INTEGER,profile_id INTEGER);
+                CREATE TABLE identities(id INTEGER PRIMARY KEY,creator_id INTEGER,kind TEXT,handle TEXT,enabled INTEGER);
+                INSERT INTO creators VALUES(1,'Whyp Artist',1,1),(2,'Audiochan Artist',1,1),
+                    (3,'Hotaudio Artist',1,1),(4,'Unmonitored Artist',0,1);
+                INSERT INTO identities VALUES(1,1,'whyp','@whypartist',1),
+                    (2,2,'audiochan','audioartist',1),(3,3,'hotaudio','hotartist',1),
+                    (4,4,'whyp','@inactive',1);''')
+            cfg=b.configured_discovery(db,{'creator_aliases':{},'allowlist':[],
+                'soundgasm_creators':[],'sfw_expansion':{'creators':[]},'hypno_required':False})
+            urls={'whyp':'https://whyp.it/tracks/sleep-ABC123',
+                  'audiochan':'https://audiochan.com/a/ABC123',
+                  'hotaudio':'https://hotaudio.net/u/hotartist/sleep'}
+            owners={'whyp':'Whyp Artist','audiochan':'Audiochan Artist','hotaudio':'Hotaudio Artist'}
+            def listing(_http,kind,handle):
+                self.assertEqual(handle,{'whyp':'@whypartist','audiochan':'audioartist',
+                                         'hotaudio':'hotartist'}[kind])
+                return [{'id':kind+'-id','title':'[F4M] Sleep hypnosis',
+                         'url':urls[kind],'published':123}]
+            with patch.object(creator_audio_sources,'profile_listing',side_effect=listing) as profiles:
+                reports=s.discover(db,cfg,{},None,['whyp','audiochan','hotaudio'])
+            self.assertEqual(profiles.call_count,3)
+            self.assertEqual([report['items']['queued'] for report in reports],[1,1,1])
+            rows=db.execute('SELECT source,creator,key,published FROM assets ORDER BY source').fetchall()
+            self.assertEqual([(row['source'],row['creator'],row['key'],row['published']) for row in rows],
+                [(kind+':'+handle,owners[kind],urls[kind],123) for kind,handle in
+                 [('audiochan','audioartist'),('hotaudio','hotartist'),('whyp','@whypartist')]])
+            db.close()
+
     def test_linked_soundgasm_identity_uses_owning_creator_and_profile(self):
         with tempfile.TemporaryDirectory() as root:
             db=s.open_db(Path(root)/'state.db');seen=[]
