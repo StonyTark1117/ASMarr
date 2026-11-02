@@ -319,6 +319,16 @@ def evidence(command, *arguments):
     subprocess.run([sys.executable, str(OPS / command), *map(str, arguments)], check=True)
 
 
+def require_creator_audio_evidence(application, proof):
+    if not (Path(application)/'providers/creator_audio_sources.py').is_file():
+        return
+    tests=proof.get('tests', [])
+    if (proof.get('creatorAudioFixtures') is not True
+            or not any(name.startswith('test_creator_audio_sources.CreatorAudioSourceTests.') for name in tests)
+            or not any(name.startswith('test_providers.ProviderTests.') for name in tests)):
+        raise ValueError('installed_creator_audio_fixtures_not_certified')
+
+
 def read_protected(path):
     path = Path(path)
     if not path.is_absolute():
@@ -417,7 +427,9 @@ def deploy_preserving_queued(stage, fixtures, proposed, ci, release, accepted, p
         runtime=ACCEPTANCE/('runtime-queued-upgrade-'+stamp+'.json')
         extra=('--include-removal',) if include_removal_tests else ()
         evidence('runtime_fixtures.py','verify','--fixtures',fixtures,'--include-video',*extra,'--output',runtime)
-        if json.loads(runtime.read_text()).get('passed') is not True:
+        runtime_proof=json.loads(runtime.read_text())
+        require_creator_audio_evidence(APPLICATION,runtime_proof)
+        if runtime_proof.get('passed') is not True:
             raise ValueError('installed_runtime_fixtures_failed')
         preservation=ACCEPTANCE/('plex-queued-upgrade-'+stamp+'.json')
         evidence('plex_invariants.py','compare','--baseline',baseline,'--output',preservation,'--include-video')
@@ -564,7 +576,9 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None,
         runtime = ACCEPTANCE / ('runtime-video-upgrade-' + stamp + '.json')
         extra=('--include-removal',) if include_removal_tests else ()
         evidence('runtime_fixtures.py', 'verify', '--fixtures', fixtures, '--include-video', *extra, '--output', runtime)
-        if json.loads(runtime.read_text()).get('passed') is not True:
+        runtime_proof=json.loads(runtime.read_text())
+        require_creator_audio_evidence(APPLICATION,runtime_proof)
+        if runtime_proof.get('passed') is not True:
             raise ValueError('installed_runtime_fixtures_failed')
         preservation = ACCEPTANCE / ('plex-video-upgrade-' + stamp + '.json')
         evidence('plex_invariants.py', 'compare', '--baseline', baseline, '--output', preservation, *plex_extra)

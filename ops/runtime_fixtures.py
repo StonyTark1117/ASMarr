@@ -86,6 +86,17 @@ class EvidenceResult(unittest.TextTestResult):
         self.executed = []
 
 
+def creator_audio_tests(loader, manifest):
+    required = {'tests/test_creator_audio_sources.py', 'tests/test_providers.py'}
+    if not required.issubset(manifest.get('files', {})):
+        raise ValueError('creator_audio_runtime_fixtures_missing')
+    import test_creator_audio_sources
+    import test_providers
+    cases = ((test_creator_audio_sources.CreatorAudioSourceTests, 'test_creator_audio_sources.CreatorAudioSourceTests.'),
+             (test_providers.ProviderTests, 'test_providers.ProviderTests.'))
+    return tuple(prefix + name for cls, prefix in cases for name in loader.getTestCaseNames(cls))
+
+
 def verify(root, application, deployment, include_video=False, include_removal=False):
     manifest = verify_fixture_files(root, deployment)
     before = artifact_hash(application)
@@ -95,6 +106,7 @@ def verify(root, application, deployment, include_video=False, include_removal=F
     sys.path.insert(0, str(Path(application)/'providers'))
     loader = unittest.TestLoader()
     selected = TESTS
+    creator_audio = include_video and (Path(application)/'providers/creator_audio_sources.py').is_file()
     if include_video:
         import test_video
         import test_acquisition
@@ -106,6 +118,8 @@ def verify(root, application, deployment, include_video=False, include_removal=F
         selected += tuple('test_acquisition.AcquisitionTests.' + name
                           for name in loader.getTestCaseNames(test_acquisition.AcquisitionTests)
                           if 'test_acquisition.AcquisitionTests.' + name not in selected)
+    if creator_audio:
+        selected += creator_audio_tests(loader, manifest)
     if include_removal:
         import test_creator_removal
         for cls in (test_creator_removal.CreatorRemovalTests,test_creator_removal.PlexRemovalTests):
@@ -116,6 +130,8 @@ def verify(root, application, deployment, include_video=False, include_removal=F
     # The loaders must import the installed code, not repository provider copies.
     provider_root = (Path(application)/'providers').resolve()
     modules = ('bridge', 'scraper', 'plex_playlists') + (('video_media','youtube_source') if include_video else ()) + (('creator_removal',) if include_removal else ())
+    if creator_audio:
+        modules += ('creator_audio_sources', 'hotaudio_capture')
     for name in modules:
         module = sys.modules.get(name)
         if not module or not Path(module.__file__).resolve().is_relative_to(provider_root):
@@ -123,12 +139,13 @@ def verify(root, application, deployment, include_video=False, include_removal=F
     after = artifact_hash(application)
     fixture_manifest_after = verify_fixture_files(root, deployment)
     passed = result.wasSuccessful() and not result.skipped and tuple(result.executed) == selected and before == after and manifest == fixture_manifest_after
-    return {'scope': 'isolated installed-provider outages and recovery' + (' plus video lifecycle' if include_video else '') + '; live canaries still required',
+    return {'scope': 'isolated installed-provider outages and recovery' + (' plus video lifecycle' if include_video else '') + (' plus creator-audio source fixtures' if creator_audio else '') + '; live canaries still required',
             'recordedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'testedCommit': deployment['sourceCommit'],
             'artifactSha256': before, 'fixtureManifest': manifest, 'tests': result.executed,
             'testsRun': result.testsRun, 'failures': [test.id() for test, _ in result.failures],
             'errors': [test.id() for test, _ in result.errors], 'skipped': [test.id() for test, _ in result.skipped],
-            'artifactUnchanged': before == after, 'networkPolicy': 'connections blocked', 'passed': passed}
+            'artifactUnchanged': before == after, 'creatorAudioFixtures': creator_audio,
+            'networkPolicy': 'connections blocked', 'passed': passed}
 
 
 def main():

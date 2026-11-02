@@ -14,6 +14,18 @@ import production_upgrade as upgrade
 
 
 class ProductionUpgradeTests(unittest.TestCase):
+    def test_creator_audio_release_requires_expanded_installed_evidence(self):
+        with tempfile.TemporaryDirectory() as name:
+            app=Path(name)
+            upgrade.require_creator_audio_evidence(app,{'passed':True})
+            (app/'providers').mkdir();(app/'providers/creator_audio_sources.py').write_text('# fixture')
+            for proof in ({'passed':True}, {'creatorAudioFixtures':True,'tests':[]}):
+                with self.assertRaisesRegex(ValueError,'creator_audio_fixtures_not_certified'):
+                    upgrade.require_creator_audio_evidence(app,proof)
+            upgrade.require_creator_audio_evidence(app,{'creatorAudioFixtures':True,'tests':[
+                'test_creator_audio_sources.CreatorAudioSourceTests.test_fixture',
+                'test_providers.ProviderTests.test_fixture']})
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

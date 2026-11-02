@@ -138,6 +138,20 @@ remain the ones saved in the bundle.
 3. On the replacement Linux host, install the release's documented OS/Python
    dependencies and pinned yt-dlp/Deno toolchain. The self-contained application
    does not need a separately installed .NET runtime.
+   The external browser environment is not part of the application backup. For
+   releases that use browser capture, also install Debian's `python3-venv` and
+   `chromium` packages and recreate its pinned runtime before starting the unit:
+
+   ```sh
+   sudo python3 -m venv --system-site-packages /opt/asmarr-runtime/python
+   sudo /opt/asmarr-runtime/python/bin/python3 -m pip install \
+     --require-hashes --only-binary=:all: \
+     -r /absolute/restored/application/packaging/browser-runtime-linux-x64.txt
+   ```
+
+   Keep the Chromium sandbox enabled. Recheck browser capture under the recovered
+   service account and restrictions before enabling its connector; an old local
+   browser test is not proof that the replacement host supports it.
 4. Mount the existing audio/video/download roots at their original paths. Check
    access for the `asmarr` account. Do not format, rename, rescan with destructive
    tools, or copy missing media from this bundle: it contains no media.

@@ -94,7 +94,8 @@ def install(package,sha,certificate,key,recipient,audio,video,host,ca=None,prefi
         subprocess.run(['apt-get','update'],check=True)
         subprocess.run(['apt-get','install','-y','python3','python3-venv','python3-requests','python3-yaml','python3-mutagen','chromium','ffmpeg','openssl','acl','ca-certificates'],check=True)
         subprocess.run(['python3','-m','venv','--system-site-packages',str(runtime/'python')],check=True)
-        subprocess.run([str(runtime/'python/bin/python3'),'-m','pip','install','playwright==1.64.1'],check=True)
+        subprocess.run([str(runtime/'python/bin/python3'),'-m','pip','install','--require-hashes','--only-binary=:all:',
+                        '-r',str(Path(scratch)/'application/packaging/browser-runtime-linux-x64.txt')],check=True)
         try:account=pwd.getpwnam('asmarr')
         except KeyError:
             subprocess.run(['useradd','--system','--home-dir','/var/lib/asmarr','--shell','/usr/sbin/nologin','asmarr'],check=True);account=pwd.getpwnam('asmarr')

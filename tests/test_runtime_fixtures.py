@@ -55,3 +55,17 @@ class RuntimeFixtureSafetyTests(unittest.TestCase):
         (self.root/'fixture-manifest.json').write_text(json.dumps(self.manifest))
         with self.assertRaisesRegex(ValueError, 'empty'):
             fixtures.verify_fixture_files(self.root, self.deployment)
+
+    def test_creator_audio_requires_both_version_matched_fixture_modules(self):
+        with self.assertRaisesRegex(ValueError, 'creator_audio_runtime_fixtures_missing'):
+            fixtures.creator_audio_tests(unittest.TestLoader(), self.manifest)
+
+    def test_creator_audio_selection_covers_ownership_metadata_and_partial_capture(self):
+        manifest={'files':dict.fromkeys(('tests/test_creator_audio_sources.py','tests/test_providers.py'))}
+        names=fixtures.creator_audio_tests(unittest.TestLoader(),manifest)
+        self.assertEqual(len(names),len(set(names)))
+        for name in ('test_creator_audio_sources.CreatorAudioSourceTests.test_audiochan_requires_public_metadata_and_fresh_play_intent',
+                     'test_creator_audio_sources.CreatorAudioSourceTests.test_hotaudio_partial_capture_never_publishes',
+                     'test_creator_audio_sources.CreatorAudioSourceTests.test_hotaudio_capture_script_rejects_before_copy',
+                     'test_providers.ProviderTests.test_monitored_creator_audio_identities_enqueue_owned_recordings'):
+            self.assertIn(name,names)
