@@ -32,6 +32,14 @@ def build(repository,publish,toolchain,output,commit,version):
         subprocess.run(['git','-C',str(repository),*args],check=True)
     identity=json.loads((publish/'build-identity.json').read_text())
     if identity!={'sourceCommit':commit,'version':version}:raise ValueError('Publish identity does not match exact release source/version')
+    expected=(publish/'build-files.txt').read_text().splitlines()
+    if (len(expected)!=len(set(expected)) or any(not name or '\\' in name or
+            PurePosixPath(name).is_absolute() or '..' in PurePosixPath(name).parts for name in expected)):
+        raise ValueError('Invalid publish file inventory')
+    actual={path.relative_to(publish).as_posix() for path in publish.rglob('*')
+            if path.is_file() and '__pycache__' not in path.relative_to(publish).parts and path.suffix!='.pyc'}
+    if actual!=set(expected):
+        raise ValueError('Published files differ from build inventory; publish into a new empty directory before packaging')
     epoch=int(git(repository,'show','-s','--format=%ct',commit))
     files={}
     def add(name,data,executable=False):

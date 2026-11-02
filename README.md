@@ -106,5 +106,9 @@ Tests use isolated databases and recorded/local fixtures, not production
 credentials. [Historical migration, acceptance gates and audited deployment
 details](docs/rollout-audit.md) are separate from the normal user workflow.
 
+For release packaging, publish into a new empty output directory. The packager
+checks the build's file inventory and refuses obsolete or missing files;
+do not reuse a publish directory from an older build.
+
 Jellyfin/Emby, SABnzbd/Usenet, multi-user accounts, import lists, custom formats,
 and unattended updates remain outside the current release.

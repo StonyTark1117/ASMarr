@@ -46,6 +46,11 @@ class ReleasePackageTests(unittest.TestCase):
         (self.publish/'ASMarr').write_text('fixture application');(self.publish/'ASMarr').chmod(0o755)
         (self.publish/'ASMarr.deps.json').write_text('{"libraries":{"GeneratedFixture/42.0.0":{"type":"package"}}}')
         (self.publish/'build-identity.json').write_text(json.dumps({'sourceCommit':self.commit,'version':'0.3.0'}))
+        self.record_inventory()
+
+    def record_inventory(self):
+        names={p.relative_to(self.publish).as_posix() for p in self.publish.rglob('*') if p.is_file()}
+        (self.publish/'build-files.txt').write_text('\n'.join(sorted(names|{'build-files.txt'}))+'\n')
 
     def package(self,folder='output'):
         return packager.build(self.repo,self.publish,self.tools,self.root/folder,self.commit,'0.3.0')
@@ -84,7 +89,17 @@ class ReleasePackageTests(unittest.TestCase):
 
     def test_private_build_paths_in_debug_symbols_are_not_published(self):
         (self.publish/'ASMarr.pdb').write_bytes(str(self.repo.resolve()).encode())
+        self.record_inventory()
         with self.assertRaises(ValueError):self.package()
+
+    def test_stale_files_and_missing_current_files_are_rejected(self):
+        stale=self.publish/'wwwroot/assets/old.js';stale.parent.mkdir(parents=True)
+        stale.write_text('obsolete fixture asset')
+        with self.assertRaisesRegex(ValueError,'build inventory'):self.package()
+        stale.unlink()
+        (self.publish/'providers/bridge.py').unlink()
+        with self.assertRaisesRegex(ValueError,'build inventory'):self.package()
+        self.assertFalse((self.root/'output').exists())
 
     def test_existing_installation_guard_runs_before_package_or_system_changes(self):
         prefix=self.root/'prefix';(prefix/'opt/asmarr').mkdir(parents=True)

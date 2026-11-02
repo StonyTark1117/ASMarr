@@ -12,5 +12,6 @@
   </ItemGroup>
   <Target Name="RecordPublishIdentity" AfterTargets="Publish">
     <WriteLinesToFile File="$(PublishDir)build-identity.json" Lines="{&quot;sourceCommit&quot;:&quot;$(SourceRevisionId)&quot;,&quot;version&quot;:&quot;$(Version)&quot;}" Overwrite="true" />
+    <WriteLinesToFile File="$(PublishDir)build-files.txt" Lines="@(ResolvedFileToPublish->'%(RelativePath)');@(_PublishStaticWebAssetsTargetPath->'%(TargetPath)');$(TargetName).staticwebassets.endpoints.json;build-identity.json;build-files.txt" Overwrite="true" />
   </Target>
 </Project>
