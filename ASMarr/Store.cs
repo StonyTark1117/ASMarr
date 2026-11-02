@@ -92,6 +92,31 @@ public sealed class Store
         SettingDefault("video.naming", "{Creator}/{Year}/{Date} - {Title} [{Provider}-{SourceId}].{ext}");
         foreach (var (name, seconds) in new[] { ("discovery",86400), ("queue",300), ("video-queue",300), ("disk-scan",86400), ("plex",600), ("plex-video",600), ("playlists",86400), ("health",300), ("backup",86400) })
             Execute("INSERT OR IGNORE INTO tasks(name,interval_seconds,next_run) VALUES($name,$seconds,$next)", ("name", name), ("seconds", seconds), ("next", DateTimeOffset.UtcNow.AddSeconds(name == "discovery" ? 60 : seconds).ToString("O")));
+        InitializeFreshInstallation();
+    }
+    void InitializeFreshInstallation()
+    {
+        var marker=System.IO.Path.Combine(ConfigRoot,"fresh-install.json");
+        if(!File.Exists(marker)||Setting("installation.kind")!="")return;
+        using var input=JsonDocument.Parse(File.ReadAllText(marker));
+        if(input.RootElement.GetProperty("kind").GetString()!="fresh")throw new InvalidOperationException("Invalid fresh-install marker");
+        // This is new-instance initialization, never permission to bypass an
+        // existing deployment's migration/cutover checks.
+        if(Setting("mode")!="shadow"||Query("SELECT key FROM assets LIMIT 1").Count!=0||Query("SELECT id FROM creators LIMIT 1").Count!=0||Query("SELECT id FROM commands LIMIT 1").Count!=0||Query("SELECT id FROM migration_audits LIMIT 1").Count!=0)
+            throw new InvalidOperationException("Fresh initialization requires an empty instance");
+        string audio=input.RootElement.GetProperty("audioRoot").GetString()!,video=input.RootElement.GetProperty("videoRoot").GetString()!;
+        if(!System.IO.Path.IsPathFullyQualified(audio)||!System.IO.Path.IsPathFullyQualified(video))throw new InvalidOperationException("Absolute roots required");
+        using var db=Open();using var transaction=db.BeginTransaction();
+        using var command=db.CreateCommand();command.Transaction=transaction;
+        command.CommandText="""
+            INSERT INTO settings(key,value) VALUES('installation.kind','fresh'),('recovery.hold','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+            UPDATE settings SET value=$audio WHERE key='root';
+            UPDATE settings SET value=$video WHERE key='video.root';
+            UPDATE tasks SET enabled=0;
+            INSERT INTO migration_audits(at,result) VALUES($now,'{"kind":"fresh","legacyImported":false,"note":"New empty instance; not a legacy migration acceptance"}');
+            """;
+        Bind(command,new[]{("audio",(object?)audio),("video",(object?)video),("now",(object?)DateTimeOffset.UtcNow.ToString("O"))});
+        command.ExecuteNonQuery();transaction.Commit();
     }
     static void AddColumn(SqliteConnection db,string table,string column,string definition)
     {

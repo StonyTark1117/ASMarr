@@ -2,7 +2,11 @@ using Microsoft.AspNetCore.SignalR;
 using System.Text.Json;
 
 namespace ASMarr;
-public sealed class StatusHub:Hub {}
+public sealed class StatusHub(SessionSecurity sessions):Hub
+{
+    public override Task OnConnectedAsync(){sessions.Track(Context);return base.OnConnectedAsync();}
+    public override Task OnDisconnectedAsync(Exception? exception){sessions.Untrack(Context.ConnectionId);return base.OnDisconnectedAsync(exception);}
+}
 
 public sealed class Worker(Store store,ProviderProcess providers,IHubContext<StatusHub> hub,INotificationProvider notifications,ILogger<Worker> logger):BackgroundService
 {
@@ -15,12 +19,15 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
         store.Execute("UPDATE commands SET state='interrupted',finished=$now,error='Service restarted during execution' WHERE state='running'",("now",DateTimeOffset.UtcNow.ToString("O")));
         store.InterruptRunningVideoBackfills();
         var nextBackfillRecovery=DateTimeOffset.MinValue;
-        if(store.Query("SELECT key FROM assets LIMIT 1").Count==0&&File.Exists(System.IO.Path.Combine(store.ConfigRoot,"sources.yaml"))&&store.Query("SELECT id FROM commands WHERE name='migration' AND state='queued'").Count==0)
+        if(store.Setting("installation.kind")!="fresh"&&store.Setting("recovery.hold")!="true"&&store.Query("SELECT key FROM assets LIMIT 1").Count==0&&File.Exists(System.IO.Path.Combine(store.ConfigRoot,"sources.yaml"))&&store.Query("SELECT id FROM commands WHERE name='migration' AND state='queued'").Count==0)
             store.Enqueue("migration",new {});
         while(!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                // An offline restore is inert even with resumable backfills.
+                if(store.Setting("recovery.hold")=="true")
+                {await Task.Delay(TimeSpan.FromSeconds(2),stoppingToken);continue;}
                 var now=DateTimeOffset.UtcNow.ToString("O");
                 if(DateTimeOffset.UtcNow>=nextBackfillRecovery)
                 {
@@ -30,7 +37,8 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
                 foreach(var t in store.Query("SELECT * FROM tasks WHERE enabled=1 AND next_run<=$now",("now",now)))
                 {
                     string name=t["name"]!.ToString()!;
-                    if(store.Query("SELECT id FROM commands WHERE name=$name AND state IN ('queued','running')",("name",name)).Count==0) store.Enqueue(name,new {});
+                    if(store.Query("SELECT id FROM commands WHERE name=$name AND state IN ('queued','running')",("name",name)).Count==0)
+                        store.Enqueue(name,new {trigger="scheduler",scheduledTask=name,scheduledFor=t["next_run"]});
                     store.Execute("UPDATE tasks SET next_run=$next WHERE name=$name",("name",name),("next",DateTimeOffset.UtcNow.AddSeconds(Convert.ToInt32(t["interval_seconds"])).ToString("O")));
                 }
                 var command=store.Query("SELECT * FROM commands WHERE state='queued' ORDER BY created LIMIT 1").FirstOrDefault();
@@ -76,7 +84,7 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
                 "queue" => shadow ? new {status="shadow",message="Acquisitions disabled"} : (object)await providers.Run("process-queue",new {},timeout.Token),
                 "video-queue" => shadow ? new {status="shadow",message="Video acquisitions disabled"} : (object)await providers.Run("video-process-queue",new {},timeout.Token),
                 "health" => new {status="ok",integrity=store.Query("PRAGMA quick_check"),mode=store.Setting("mode")},
-                "backup" => new {path=store.Backup()},
+                "backup" => await providers.Run("backup",new {},timeout.Token),
                 "source-test" => await providers.Run("test-source",args.RootElement,timeout.Token),
                 "search" => await providers.Run("search",args.RootElement,timeout.Token),
                 "grab" => await providers.Run("grab",args.RootElement,timeout.Token),

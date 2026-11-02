@@ -125,4 +125,53 @@ Assert(removal.Id is not null,"keep-files removal becomes a durable provider com
 Assert(CreatorRemoval.Request(store,2,new(false,true,"",new string('a',64))).Error is not null,"duplicate concurrent removal is rejected");
 Assert(store.Query("SELECT * FROM commands WHERE id=$id AND name='creator-remove' AND state='queued'",("id",removal.Id)).Count==1,"queued removal retains the reviewed options for serialized execution");
 Console.WriteLine($"{assertions} store integration assertions passed");
+// Credential-version validation also covers root-only resets: both replace the
+// salted hash, so old HTTP cookies and open status connections lose access.
+var authPath=Path.Combine(store.ConfigRoot,"auth.json");
+var authFields=new Dictionary<string,string>{{"username","admin"},{"salt",Guid.NewGuid().ToString("N")},{"hash",Guid.NewGuid().ToString("N")},{"apiKey",Guid.NewGuid().ToString("N")}};
+System.Text.Json.JsonElement AuthDocument()=>System.Text.Json.JsonSerializer.SerializeToElement(authFields);
+File.WriteAllText(authPath,AuthDocument().GetRawText());
+var guard=new SessionSecurity(store);
+var session=new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(new[]{new System.Security.Claims.Claim(SessionSecurity.ClaimType,SessionSecurity.Stamp(AuthDocument()))},"Cookies"));
+Assert(guard.IsCurrent(session),"current credential stamp accepts an authenticated session");
+var oldCookie=new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(new[]{new System.Security.Claims.Claim("name","admin")},"Cookies"));
+Assert(!guard.IsCurrent(oldCookie),"pre-hardening cookies without credential stamp are revoked");
+var hub=new TestHubContext(session);guard.Track(hub);await guard.StartAsync(CancellationToken.None);
+authFields["hash"]=Guid.NewGuid().ToString("N");
+SessionSecurity.ReplaceCredentials(authPath,AuthDocument().GetRawText());
+Assert(!guard.IsCurrent(session),"password replacement immediately rejects an old HTTP session");
+Assert(OperatingSystem.IsWindows()||File.GetUnixFileMode(authPath)==(UnixFileMode.UserRead|UnixFileMode.UserWrite),"atomic password replacement keeps mode0600");
+await Task.Delay(2500);
+Assert(hub.Aborted,"password replacement closes existing SignalR status connections");
+await guard.StopAsync(CancellationToken.None);guard.Dispose();
+var apiPrincipal=new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(new[]{new System.Security.Claims.Claim("auth","api-key")},"api-key"));
+Assert(guard.IsCurrent(apiPrincipal),"password reset does not implicitly rotate API authentication");
+File.WriteAllText(authPath,"incomplete");
+Assert(!guard.IsCurrent(session),"malformed authentication configuration fails closed");
+File.WriteAllText(authPath,"{\"username\":[],\"salt\":{},\"hash\":false}");
+Assert(!guard.IsCurrent(session),"wrong-type authentication fields fail closed without crashing status worker");
+Console.WriteLine($"{assertions} total integration assertions passed");
+Environment.SetEnvironmentVariable("ASMARR_STATE",Path.Combine(root,"fresh-state"));
+Environment.SetEnvironmentVariable("ASMARR_CONFIG",Path.Combine(root,"fresh-config"));
+Directory.CreateDirectory(Path.Combine(root,"fresh-config"));
+File.WriteAllText(Path.Combine(root,"fresh-config","fresh-install.json"),System.Text.Json.JsonSerializer.Serialize(new {kind="fresh",audioRoot=Path.Combine(root,"audio"),videoRoot=Path.Combine(root,"video")}));
+var fresh=new Store();fresh.Initialize();fresh.Initialize();
+Assert(fresh.Setting("installation.kind")=="fresh"&&fresh.Setting("recovery.hold")=="true","fresh package initializes an inert setup hold without legacy migration");
+Assert(fresh.Query("SELECT * FROM tasks WHERE enabled=1").Count==0,"fresh install starts no scheduled acquisition");
+Assert(fresh.Query("SELECT * FROM migration_audits").Count==1,"fresh initialization remains idempotent and is not fabricated legacy acceptance");
+Assert(fresh.Query("SELECT * FROM creators").Count==0,"fresh install does not invent creators");
+Console.WriteLine($"{assertions} final integration assertions passed");
 SqliteConnection.ClearAllPools();Directory.Delete(root,true);
+
+sealed class TestHubContext(System.Security.Claims.ClaimsPrincipal user):Microsoft.AspNetCore.SignalR.HubCallerContext
+{
+    readonly CancellationTokenSource source=new();
+    public bool Aborted{get;private set;}
+    public override string ConnectionId=>"fixture-status-connection";
+    public override string? UserIdentifier=>"fixture-admin";
+    public override System.Security.Claims.ClaimsPrincipal? User=>user;
+    public override IDictionary<object,object?> Items{get;}=new Dictionary<object,object?>();
+    public override Microsoft.AspNetCore.Http.Features.IFeatureCollection Features{get;}=new Microsoft.AspNetCore.Http.Features.FeatureCollection();
+    public override CancellationToken ConnectionAborted=>source.Token;
+    public override void Abort(){Aborted=true;source.Cancel();}
+}

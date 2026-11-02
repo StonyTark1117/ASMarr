@@ -21,16 +21,22 @@ builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("reddit"
 builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("soundgasm",sp.GetRequiredService<ProviderProcess>()));
 builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("youtube",sp.GetRequiredService<ProviderProcess>()));
 builder.Services.AddSignalR();builder.Services.AddOpenApi();builder.Services.AddHostedService<Worker>();
+builder.Services.AddSingleton<SessionSecurity>();builder.Services.AddHostedService(sp=>sp.GetRequiredService<SessionSecurity>());
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(System.IO.Path.Combine(store.ConfigRoot,"keys"))).SetApplicationName("ASMarr");
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(o=> {
     o.Cookie.Name="__Host-ASMarr";o.Cookie.HttpOnly=true;o.Cookie.SecurePolicy=CookieSecurePolicy.Always;o.Cookie.SameSite=SameSiteMode.Strict;
     o.ExpireTimeSpan=TimeSpan.FromHours(12);o.SlidingExpiration=true;
     o.Events.OnRedirectToLogin=c=>{c.Response.StatusCode=401;return Task.CompletedTask;};
     o.Events.OnRedirectToAccessDenied=c=>{c.Response.StatusCode=403;return Task.CompletedTask;};
+    o.Events.OnValidatePrincipal=async c=> {
+        if(!c.HttpContext.RequestServices.GetRequiredService<SessionSecurity>().IsCurrent(c.Principal))
+        {c.RejectPrincipal();await c.HttpContext.SignOutAsync();}
+    };
 });
 builder.Services.AddAuthorization();
 builder.Services.AddRateLimiter(o=> {o.RejectionStatusCode=429;o.AddPolicy("login",context=>RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString()??"unknown",_=>new FixedWindowRateLimiterOptions {PermitLimit=5,Window=TimeSpan.FromMinutes(1),QueueLimit=0}));});
 var authPath=System.IO.Path.Combine(store.ConfigRoot,"auth.json");
+var passwordGate=new SemaphoreSlim(1,1);
 if(!File.Exists(authPath))
 {
     string password=Convert.ToHexString(RandomNumberGenerator.GetBytes(18)),apiKey=Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
@@ -69,7 +75,7 @@ app.MapPost("/api/v1/auth/login",async(HttpContext context,Login input)=> {
     var auth=Auth();var salt=Convert.FromBase64String(auth.GetProperty("salt").GetString()!);
     var hash=Convert.ToBase64String(Rfc2898DeriveBytes.Pbkdf2(input.Password,salt,600000,HashAlgorithmName.SHA256,32));
     if(!Equal(input.Username,auth.GetProperty("username").GetString()!)||!Equal(hash,auth.GetProperty("hash").GetString()!))return Results.Unauthorized();
-    await context.SignInAsync(new ClaimsPrincipal(new ClaimsIdentity(new[]{new Claim(ClaimTypes.Name,"admin")},CookieAuthenticationDefaults.AuthenticationScheme)));
+    await context.SignInAsync(new ClaimsPrincipal(new ClaimsIdentity(new[]{new Claim(ClaimTypes.Name,"admin"),new Claim(SessionSecurity.ClaimType,SessionSecurity.Stamp(auth))},CookieAuthenticationDefaults.AuthenticationScheme)));
     return Results.Ok(new {username="admin"});
 }).RequireRateLimiting("login");
 var api=app.MapGroup("/api/v1").RequireAuthorization();
@@ -82,15 +88,20 @@ api.MapPost("/creators",(NewCreator creator)=> {
 api.MapGet("/auth",(HttpContext c)=>new {username=c.User.Identity!.Name});
 api.MapPost("/auth/logout",async(HttpContext c)=>{await c.SignOutAsync();return Results.NoContent();});
 api.MapPost("/auth/password",async(PasswordChange p)=> {
+    await passwordGate.WaitAsync();
+    try {
     if(p.Password.Length<12)return Results.BadRequest(new {error="Use at least 12 characters"});
     var a=Auth();var current=Convert.ToBase64String(Rfc2898DeriveBytes.Pbkdf2(p.CurrentPassword,Convert.FromBase64String(a.GetProperty("salt").GetString()!),600000,HashAlgorithmName.SHA256,32));
     if(!Equal(current,a.GetProperty("hash").GetString()!))return Results.Unauthorized();
     var salt=RandomNumberGenerator.GetBytes(16);var hash=Convert.ToBase64String(Rfc2898DeriveBytes.Pbkdf2(p.Password,salt,600000,HashAlgorithmName.SHA256,32));
-    await File.WriteAllTextAsync(authPath,JsonSerializer.Serialize(new {username="admin",salt=Convert.ToBase64String(salt),hash,apiKey=a.GetProperty("apiKey").GetString()}));
+    var fields=JsonSerializer.Deserialize<Dictionary<string,JsonElement>>(a.GetRawText())!;
+    fields["salt"]=JsonSerializer.SerializeToElement(Convert.ToBase64String(salt));fields["hash"]=JsonSerializer.SerializeToElement(hash);
+    SessionSecurity.ReplaceCredentials(authPath,JsonSerializer.Serialize(fields));
     var initial=System.IO.Path.Combine(store.ConfigRoot,"initial-admin.txt");if(File.Exists(initial))File.Delete(initial);
     return Results.Ok(new {status="updated"});
+    }finally{passwordGate.Release();}
 });
-api.MapGet("/system/status",()=>new {version="0.2.0",runtime=System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,mode=store.Setting("mode"),root=store.Setting("root"),videoRoot=store.Setting("video.root"),counts=store.Query("SELECT state,count(*) AS count FROM assets a WHERE EXISTS(SELECT 1 FROM creators c WHERE c.name=a.creator) GROUP BY state"),mediaCounts=store.Query("SELECT media_kind,state,count(*) AS count FROM media_assets m WHERE EXISTS(SELECT 1 FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=m.recording_key) GROUP BY media_kind,state"),creators=store.Query("SELECT count(*) AS count FROM creators"),sources=store.Query("SELECT count(*) AS count FROM sources"),shadowCycles=store.Query("SELECT id,started,finished,clean FROM shadow_cycles ORDER BY id DESC"),qualifiedShadowDays=ShadowQualification.Count(store),disk=Disk(store.Setting("root")),videoDisk=Disk(store.Setting("video.root")),scheduler="internal"});
+api.MapGet("/system/status",()=>new {version=typeof(Store).Assembly.GetName().Version?.ToString(3)??"unknown",runtime=System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,mode=store.Setting("mode"),root=store.Setting("root"),videoRoot=store.Setting("video.root"),counts=store.Query("SELECT state,count(*) AS count FROM assets a WHERE EXISTS(SELECT 1 FROM creators c WHERE c.name=a.creator) GROUP BY state"),mediaCounts=store.Query("SELECT media_kind,state,count(*) AS count FROM media_assets m WHERE EXISTS(SELECT 1 FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=m.recording_key) GROUP BY media_kind,state"),creators=store.Query("SELECT count(*) AS count FROM creators"),sources=store.Query("SELECT count(*) AS count FROM sources"),shadowCycles=store.Query("SELECT id,started,finished,clean FROM shadow_cycles ORDER BY id DESC"),qualifiedShadowDays=ShadowQualification.Count(store),disk=Disk(store.Setting("root")),videoDisk=Disk(store.Setting("video.root")),scheduler="internal"});
 api.MapGet("/creators",()=>CreatorLibrary.Read(store));
 api.MapGet("/creators/{id:int}",(int id)=>new {creator=store.Query("SELECT * FROM creators WHERE id=$id",("id",id)).FirstOrDefault(),identities=store.Query("SELECT * FROM identities WHERE creator_id=$id",("id",id)),recordings=store.Query("SELECT a.*,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Audio') AS audio_state,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Video') AS video_state FROM assets a WHERE creator=(SELECT name FROM creators WHERE id=$id) ORDER BY acquired DESC",("id",id)),backfill=store.Query("SELECT * FROM backfill_jobs WHERE creator_id=$id AND media_kind='Video' ORDER BY started DESC LIMIT 1",("id",id)).FirstOrDefault()});
 api.MapGet("/creators/{id:int}/removal-preview",async(int id,ProviderProcess provider,CancellationToken ct)=> {
@@ -220,9 +231,9 @@ api.MapPost("/commands",(CommandInput c)=> {
 });
 api.MapGet("/health",()=>new {database=store.Query("PRAGMA quick_check"),sources=store.Query("SELECT name,status,last_success FROM sources"),failedCommands=store.Query("SELECT id,name,error FROM commands WHERE state='failed' ORDER BY created DESC LIMIT 10"),migration=store.Query("SELECT * FROM migration_audits ORDER BY id DESC LIMIT 1")});
 api.MapGet("/logs",()=>store.Query("SELECT * FROM logs ORDER BY id DESC LIMIT 500"));
-api.MapGet("/backups",()=>Directory.EnumerateFiles(System.IO.Path.Combine(store.Root,"backups"),"*.db").Select(p=>new {name=System.IO.Path.GetFileName(p),size=new FileInfo(p).Length,created=new FileInfo(p).CreationTimeUtc}));
+api.MapGet("/backups",()=>Directory.EnumerateFiles(System.IO.Path.Combine(store.Root,"backups")).Where(p=>p.EndsWith(".db")||p.EndsWith(".cms")).Select(p=>new {name=System.IO.Path.GetFileName(p),size=new FileInfo(p).Length,created=new FileInfo(p).CreationTimeUtc}));
 api.MapGet("/shadow-cycles",()=>store.Query("SELECT * FROM shadow_cycles ORDER BY id DESC"));
-api.MapGet("/system/updates",()=>new {version="0.2.0",automatic=false,channel="local",message="Updates are installed through an audited deployment"});
+api.MapGet("/system/updates",()=>new {version=typeof(Store).Assembly.GetName().Version?.ToString(3)??"unknown",automatic=false,channel="local",message="Updates are installed through an audited deployment"});
 app.MapHub<StatusHub>("/api/v1/events").RequireAuthorization();app.MapOpenApi().RequireAuthorization();
 app.MapFallbackToFile("index.html");app.Run();
 

@@ -27,6 +27,7 @@ import video_media
 import acquisition_profiles
 import source_configuration
 import creator_removal
+import backup_snapshot
 from categories import CATEGORIES
 
 STATE = Path(os.environ.get('ASMARR_STATE', '/var/lib/asmarr'))
@@ -703,6 +704,8 @@ def process_queue(db,cfg):
 
 
 def dispatch(operation,args):
+    if operation=='backup':
+        return backup_snapshot.create(STATE, CONFIG)
     with contextlib.closing(connect()) as db:
         if operation=='creator-removal-preview':
             # Preview needs library roots only, not source/API credentials.

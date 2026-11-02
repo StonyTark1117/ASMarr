@@ -1,0 +1,20 @@
+[Unit]
+Description=Pull verified encrypted ASMarr backups to a separate host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=asmarr-backup
+Group=asmarr-backup
+ExecStart=/usr/bin/python3 /usr/local/lib/asmarr/backup_pull.py --policy /etc/asmarr-backup/offhost-policy.json
+StateDirectory=asmarr-backup
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/asmarr-backup
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TimeoutStartSec=20min

@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly off-host ASMarr backup copy
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=asmarr-backup-pull.service
+
+[Install]
+WantedBy=timers.target

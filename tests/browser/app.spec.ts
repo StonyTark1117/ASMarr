@@ -1,6 +1,43 @@
 import { test, expect } from "@playwright/test";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+
+test("password change and operator reset revoke existing sessions", async ({page, request}) => {
+  await login(page);
+  const path = config();
+  const original = readFileSync(path + "/auth.json");
+  const initial = readFileSync(path + "/initial-admin.txt");
+  const current = initial.toString().split("\n")[1].split(": ")[1];
+  const generated = randomUUID();
+  const cookieHeader = (cookies: any[]) => cookies.map(c => c.name + "=" + c.value).join("; ");
+  const oldCookie = cookieHeader(await page.context().cookies());
+  const originalKey = auth().apiKey;
+  try {
+    const changed = await page.request.post("/api/v1/auth/password", {
+      headers: {"X-ASMarr-Request": "1"},
+      data: {currentPassword: current, password: generated}
+    });
+    expect(changed.status()).toBe(200);
+    expect((await request.get("/api/v1/auth", {headers: {Cookie: oldCookie}})).status()).toBe(401);
+    const signedIn = await page.request.post("/api/v1/auth/login", {
+      headers: {"X-ASMarr-Request": "1"}, data: {username: "admin", password: generated}
+    });
+    expect(signedIn.status()).toBe(200);
+    const newerCookie = cookieHeader(await page.context().cookies());
+    expect((await page.request.get("/api/v1/auth")).status()).toBe(200);
+    // Root-only recovery uses the same hash replacement. Never print its result.
+    execFileSync("python3", ["-c", "import importlib.util,pathlib,sys; s=importlib.util.spec_from_file_location('admin','../../ops/admin_login.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);m.reset_login(pathlib.Path(sys.argv[1]))", path]);
+    expect((await request.get("/api/v1/auth", {headers: {Cookie: newerCookie}})).status()).toBe(401);
+    expect(auth().apiKey).toBe(originalKey);
+    expect((await request.get("/api/v1/auth", {headers: {"X-Api-Key": originalKey}})).status()).toBe(200);
+    expect(existsSync(path + "/initial-admin.txt")).toBe(false);
+  } finally {
+    writeFileSync(path + "/auth.json", original, {mode: 0o600});
+    writeFileSync(path + "/initial-admin.txt", initial, {mode: 0o600});
+    verifiedSession = null;
+  }
+});
 const config = () =>
   JSON.parse(readFileSync("./runtime/session.json", "utf8")).config;
 const auth = () => JSON.parse(readFileSync(config() + "/auth.json", "utf8"));

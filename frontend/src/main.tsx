@@ -2400,7 +2400,7 @@ function App() {
                 ) : tab === "Backups" ? (
                   <>
                     <div className="section-heading">
-                      <h2>Database backups</h2>
+                      <h2>Recovery backups</h2>
                       <button
                         className="primary"
                         onClick={() => command("backup")}
@@ -2408,6 +2408,7 @@ function App() {
                         Create backup
                       </button>
                     </div>
+                    <p className="muted">New backups include the database, protected configuration, application and service configuration, encrypted for your recovery key. Media is not included. Off-host copying is verified separately; keep the recovery key safe and separate. Older .db files contain only SQLite.</p>
                     {Array.isArray(data) &&
                       data.map((b: Row) => (
                         <div className="source-row" key={b.name}>

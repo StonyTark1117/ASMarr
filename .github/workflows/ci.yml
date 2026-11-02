@@ -17,12 +17,12 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci && npm run build
         working-directory: frontend
-      - run: dotnet publish ASMarr/ASMarr.csproj -c Release -r linux-x64 --self-contained true -o publish
+      - run: dotnet publish ASMarr/ASMarr.csproj -c Release -r linux-x64 --self-contained true -p:SourceRevisionId="$GITHUB_SHA" -o publish
       - run: dotnet run --project tests/StoreTests/StoreTests.csproj -c Release
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests PyYAML mutagen
+      - run: pip install -r packaging/requirements.txt
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: PYTHONPATH=ASMarr/providers python -m unittest discover -s tests -v
       - run: npm ci
@@ -31,3 +31,29 @@ jobs:
         working-directory: tests/browser
       - run: npm test
         working-directory: tests/browser
+      - run: python ops/fetch_toolchain.py --output toolchain-build
+      - run: python ops/package_release.py --publish publish --toolchain toolchain-build --output dist --commit "$GITHUB_SHA" --version 0.3.0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asmarr-linux-x64-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    needs: application
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: asmarr-linux-x64-${{ github.sha }}
+          path: dist
+      - name: Prepare verified draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test "${GITHUB_REF_NAME}" = "v0.3.0"
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --draft --title "ASMarr $GITHUB_REF_NAME" --notes-file packaging/RELEASE_NOTES.md

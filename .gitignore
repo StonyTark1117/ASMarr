@@ -3,6 +3,7 @@
 **/node_modules/
 frontend/tsconfig.tsbuildinfo
 publish/
+dist/
 **/__pycache__/
 *.db
 *.db-wal
@@ -17,6 +18,13 @@ reference/
 **/initial-admin.txt
 **/tls.*
 **/.auth-reset-*
+**/auth.json.new-*
+**/backup-policy.json
+**/offhost-policy.json
+**/backup-recipient.pem
+**/recovery-key.pem
+**/recovery-cert.pem
+*.cms
 **/sshforcodex
 **/sshpass
 **/sshpass.txt
