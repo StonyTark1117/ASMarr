@@ -1,4 +1,4 @@
-"""Audited CT130 transition. Default is a read-only preflight.
+"""Audited legacy-scraper transition. Default is a read-only preflight.
 
 Run --apply only after preflight and the separate acceptance evidence pass.
 Rollback never deletes or rewrites library media.

@@ -15,7 +15,7 @@ with backup/recovery and security hardening.
   notices, immutable source/build identity, and refusal to overwrite existing
   deployments with the fresh installer.
 - Fresh installs start held with a unique generated administrator password and
-  explicit setup activation. Existing CT130 uses audited upgrade tooling.
+  explicit setup activation. Existing installations use audited upgrade tooling.
 - Short user guides for installation, operation, security, backups and recovery.
 
 The package has no personal passwords, API keys, database, private keys, or media.

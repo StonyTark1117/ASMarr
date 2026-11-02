@@ -112,7 +112,7 @@ read the release notes and take a recovery backup/off-host copy first. Coordinat
 a safe maintenance window: do not kill active transfers, imports, removals or
 history scans. Do not use a fresh-install command over an existing installation.
 
-CT130 production updates use `ops/production_upgrade.py` and exact successful CI,
+Production updates use `ops/production_upgrade.py` and exact successful CI,
 matching installed fixtures, backup and pre/post library/Plex preservation checks.
 For existing video state, keep the `--preserve-existing-video` and exact prior
 proof requirements. Removal releases also require their installed fixtures.

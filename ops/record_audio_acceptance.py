@@ -1,6 +1,6 @@
 """Capture the verified audio baseline; this does not authorize cutover.
 
-Run inside CT130 after independently checking the supplied GitHub CI run.
+Run on the application host after independently checking the supplied GitHub CI run.
 The combined release must pass CI again before pre-cutover.json is approved.
 """
 import argparse

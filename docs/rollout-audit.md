@@ -1,12 +1,12 @@
 # Historical rollout and operator audit reference
 
-This preserves the original CT130 migration/cutover procedures. It is not the
+This preserves the legacy-scraper migration/cutover procedures. It is not the
 current installation guide. Use the README and linked user guides first.
 
 # ASMarr
 
-ASMarr is a single-administrator ASMR recording library manager for the existing
-CT130 deployment. It uses ASP.NET Core .NET 10, SQLite in WAL mode, SignalR, and a
+ASMarr is a single-administrator ASMR recording library manager for Linux
+deployments. It uses ASP.NET Core .NET 10, SQLite in WAL mode, SignalR, and a
 React/TypeScript frontend served by the backend.
 
 The initial rollout starts in **shadow mode**. The existing scraper remains the
@@ -38,11 +38,15 @@ are read from protected configuration on the server.
 - qBittorrent category: `asmarr`; download path: `/mnt/downloads/asmarr`
 - HTTPS: port `8787`
 
-`ops/provision.py` runs inside CT130 as root. It backs up the old application,
+`ops/provision.py` runs on the application host as root. It backs up the old application,
 configuration, credentials, service definitions, SQLite database, and playlist
 mappings before provisioning an isolated `asmarr` account. It copies existing
 credentials directly into protected server files without exposing them. Install
-the published application and `ops/asmarr.service`, then start the service.
+the published application and `ops/asmarr.service`. Its generated certificate is
+for localhost/loopback only; supply a certificate matching your deployment's
+client-facing hostname before remote access (see [HTTPS setup](security.md)).
+Then start the service. The paths above are legacy tooling defaults, not a record
+of any particular installation; review them before migration.
 
 ### First login and password recovery
 
@@ -251,7 +255,7 @@ Python caches are excluded.
 
 `ops/runtime_fixtures.py prepare --repository . --commit <deployed-full-sha>
 --output <new-archive>` packages isolated fixtures from immutable Git objects.
-After extracting that archive to a protected scratch directory on CT130, run
+After extracting that archive to a protected scratch directory on the application host, run
 `ops/runtime_fixtures.py verify --fixtures <scratch-directory> --output
 /var/lib/asmarr/acceptance/<new-evidence-file>.json`. It requires matching fixture
 and deployed commits, verifies every fixture Git blob and the deployed artifact

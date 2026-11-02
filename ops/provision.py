@@ -1,4 +1,4 @@
-"""Run as root inside CT130 after publishing /opt/asmarr. Prints no secrets."""
+"""Run as root on the application host after publishing /opt/asmarr. Prints no secrets."""
 import json
 import os
 from pathlib import Path
@@ -46,7 +46,9 @@ if not config.exists():
 config.chmod(0o600);os.chown(config,account.pw_uid,account.pw_gid)
 cert=Path('/etc/asmarr/tls.pem');key=Path('/etc/asmarr/tls.key')
 if not cert.exists():
-    subprocess.run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-keyout',str(key),'-out',str(cert),'-days','825','-subj','/CN=arr-stack','-addext','subjectAltName=DNS:arr-stack,DNS:asmarr,IP:192.168.1.5,IP:127.0.0.1'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    # Bootstrap only: remote access requires an operator-supplied certificate
+    # matching the deployment's own names/IPs (see docs/security.md).
+    subprocess.run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-keyout',str(key),'-out',str(cert),'-days','825','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 for p in [cert,key]:p.chmod(0o600);os.chown(p,account.pw_uid,account.pw_gid)
 # Shadow mode has read access to the library and legacy state only. The cutover
 # procedure grants library writes after acceptance. Directory traversal permits

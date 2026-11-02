@@ -56,17 +56,19 @@ required. Do not expose ASMarr to the Internet just to get a certificate.
 
 ### Private-CA preparation
 
-Run on a trusted administrator computer, outside Git:
+Run on a trusted administrator computer, outside Git. Replace the reserved
+documentation hostname below with the actual hostname used by your clients;
+add additional `--host` arguments only for your own required names/IPs:
 
 ```sh
 python3 ops/tls_certificate.py init-ca --directory /absolute/private/asmarr-ca
 python3 ops/tls_certificate.py issue \
   --ca-directory /absolute/private/asmarr-ca \
   --directory /absolute/private/asmarr-leaf \
-  --host 192.168.1.5 --host arr-stack.sanderstech.local --host asmarr
+  --host asmarr.example.com
 ```
 
-Keep `ca-key.pem` off CT130 and back it up privately. Copy only the issued leaf
+Keep `ca-key.pem` off the application server and back it up privately. Copy only the issued leaf
 certificate/key to the server as `/etc/asmarr/tls.pem` and `/etc/asmarr/tls.key`,
 owned by `asmarr`; key mode 0600. Coordinate a safe service stop/restart without
 interrupting transfers. Preserve the prior certificate/key as a protected rollback.
@@ -77,7 +79,7 @@ Before use, validate trust, hostname, key match and at least 30 days of validity
 python3 ops/tls_certificate.py validate \
   --certificate /absolute/private/asmarr-leaf/tls.pem \
   --key /absolute/private/asmarr-leaf/tls.key \
-  --ca /absolute/private/asmarr-ca/ca-cert.pem --host 192.168.1.5
+  --ca /absolute/private/asmarr-ca/ca-cert.pem --host asmarr.example.com
 ```
 
 Install **`ca-cert.pem`, not either private key**, as a trusted authority on

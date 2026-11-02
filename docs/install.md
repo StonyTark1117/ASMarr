@@ -8,7 +8,7 @@ Other platforms are not yet packaged/tested.
 ## Already using ASMarr or the old scraper?
 
 **Do not run the fresh installer.** It refuses existing ASMarr or legacy scraper
-state. Existing CT130 uses the [audited upgrade procedure](operations.md#updates).
+state. Existing installations use the [audited upgrade procedure](operations.md#updates).
 Migrating an old scraper requires its state-preserving migration/cutover process,
 not a blank database. See the [historical audit guide](rollout-audit.md).
 

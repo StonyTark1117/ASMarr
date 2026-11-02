@@ -48,8 +48,9 @@ source. Encryption protects contents; it does not prove who created a bundle.
 ## Off-host copy
 
 Use a separate always-available host where possible. A second directory inside
-CT130 is not off-host. A Ceph mount can protect against loss of the container but
-does not independently protect against loss of the same storage cluster.
+the application host is not off-host. A network-storage mount can protect against
+loss of the application host but does not independently protect against loss of
+the same storage system.
 
 The supplied tools support a pull-only SSH arrangement:
 
@@ -57,7 +58,7 @@ The supplied tools support a pull-only SSH arrangement:
 - A dedicated SSH key is restricted to that exporter: no shell, forwarding,
   agent forwarding, X11, or terminal. Do not reuse a general administrator key.
 - For Proxmox, a root-owned forced command can run the exporter with
-  `--container 130`; it accepts only `list` and `get <validated backup name>`.
+  `--container <container-id>`; it accepts only `list` and `get <validated backup name>`.
 - `ops/backup_pull.py` runs on the destination. Host keys are pinned; unknown or
   changed host keys fail rather than being automatically accepted.
 
@@ -95,9 +96,9 @@ Default off-host retention is 30 completed bundles (configurable 2–365).
 template for the destination host. They use a dedicated `asmarr-backup` account,
 private `/etc/asmarr-backup/offhost-policy.json`, destination
 `/var/lib/asmarr-backup`, and root-owned tools in `/usr/local/lib/asmarr`.
-Install/review these on the **destination**, not CT130. Configure ownership and
+Install/review these on the **destination**, not the application host. Configure ownership and
 the restricted SSH key before enabling the timer. The SSH forced-command form is
-`/usr/bin/python3 /usr/local/lib/asmarr/backup_export.py --container 130` on
+`/usr/bin/python3 /usr/local/lib/asmarr/backup_export.py --container <container-id>` on
 Proxmox, with the key's `restrict` option; omit `--container` for a direct source.
 Verify the source host-key fingerprint through an existing trusted admin channel
 before writing known_hosts. An unverified key scan is not authentication.
@@ -177,5 +178,5 @@ that can replay imports or lose newer monitoring/removal decisions. Use full
 recovery only when the current state is unavailable or explicitly rejected.
 
 See [operations](operations.md#updates) for normal upgrades and the
-[historical operator audit reference](rollout-audit.md) for CT130's strict
+[historical operator audit reference](rollout-audit.md) for strict
 release/CI/fixture/Plex preservation gates.

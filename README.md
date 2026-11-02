@@ -13,10 +13,9 @@ fallback and interactive video acquisition.
 - [Passwords, sessions and HTTPS](docs/security.md)
 - [Live testing](docs/live-testing.md)
 
-The existing CT130 installation is in production at
-[https://192.168.1.5:8787](https://192.168.1.5:8787). The original scraper is retained
-but disabled. The guides describe the hardened release; check your installed
-release identity before using new operator commands.
+The guides describe the hardened release; check your installed release identity
+before using new operator commands. Deployment addresses and operational state
+belong in private operator records, not public documentation.
 
 ## Everyday use
 
@@ -41,14 +40,14 @@ Configure source policies, acquisition profiles, naming, integrations and media
 roots in **Settings**. Source credentials stay in protected server configuration.
 Passwords and API keys do not belong in Git, issue reports or screenshots.
 
-| Item | CT130 location |
+| Item | Location |
 | --- | --- |
 | Application | `/opt/asmarr` |
 | Protected configuration | `/etc/asmarr` |
 | Database and runtime state | `/var/lib/asmarr` |
-| Audio library | `/mnt/cephfs/media/asmr` |
-| Video library | `/mnt/cephfs/media/asmr-video` |
-| qBittorrent downloads | `/mnt/downloads/asmarr`, category `asmarr` |
+| Audio library | Your configured audio root |
+| Video library | Your configured video root |
+| qBittorrent downloads | Your configured download path; category `asmarr` |
 
 Set the video path in **Settings → video root** and bind it to a dedicated Plex
 **Other Videos** library. Audio requires its own Plex **Music** library.

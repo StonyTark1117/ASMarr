@@ -1,4 +1,4 @@
-"""Run inside CT130. Tests the live API without printing credentials."""
+"""Run on the application host. Tests the live API without printing credentials."""
 import json
 from pathlib import Path
 import time
