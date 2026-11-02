@@ -84,8 +84,15 @@ class ReleasePackageTests(unittest.TestCase):
 
     def test_accidental_runtime_credentials_are_rejected_before_publication(self):
         (self.publish/'auth.json').write_text('generated fixture credential')
+        self.record_inventory()
         with self.assertRaises(ValueError):self.package()
         self.assertFalse((self.root/'output').exists())
+
+    def test_invalid_publish_inventory_is_rejected(self):
+        inventory=self.publish/'build-files.txt';original=inventory.read_text()
+        for extra in ('ASMarr','../outside','/absolute','providers\\outside'):
+            inventory.write_text(original+extra+'\n')
+            with self.assertRaisesRegex(ValueError,'Invalid publish file inventory'):self.package()
 
     def test_private_build_paths_in_debug_symbols_are_not_published(self):
         (self.publish/'ASMarr.pdb').write_bytes(str(self.repo.resolve()).encode())
