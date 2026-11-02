@@ -179,10 +179,10 @@ class CreatorAudioSourceTests(unittest.TestCase):
                                                '_authorized_creator_targets': [['hotaudio', url]]}, HTTP([]))
             self.assertFalse(list(Path(directory).rglob('*.part')))
 
-    @unittest.skipUnless(shutil.which('node'), 'Node.js unavailable')
     def test_hotaudio_capture_script_rejects_before_copy(self):
         source = hotaudio_capture.CAPTURE_SCRIPT.replace('__ASMARR_MAX_BYTES__', '4')
-        script = '''global.window = global;
+        script = '''globalThis.global = globalThis;
+          global.window = global;
           global.Audio = function() {};
           global.MediaSource = function() {};
           let nativeCalls = 0;
@@ -199,7 +199,16 @@ class CreatorAudioSourceTests(unittest.TestCase):
             bytes: window.__asmarrCapture.bytes,
             chunks: window.__asmarrCapture.chunks.length,
             overflow: window.__asmarrCapture.overflow}));'''
-        result = subprocess.run(['node', '-e', script], check=True,
+        bundled_deno = Path(hotaudio_capture.__file__).resolve().parents[1] / 'toolchain' / 'deno'
+        deno = str(bundled_deno) if bundled_deno.is_file() else shutil.which('deno')
+        node = shutil.which('node')
+        if deno:
+            command = [deno, 'eval', script]
+        elif node:
+            command = [node, '-e', script]
+        else:
+            self.fail('JavaScript runtime unavailable for capture safety test')
+        result = subprocess.run(command, check=True,
                                 capture_output=True, text=True)
         self.assertEqual(json.loads(result.stdout),
                          {'rejected': True, 'nativeCalls': 1,
