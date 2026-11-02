@@ -20,7 +20,8 @@ def audiochan_requires_tier(item):
     return (any(item.get(key) for key in ('required_tier_id', 'requiredTierId',
                                          'required_tier', 'requiredTier',
                                          'required_patreon_tier', 'requiredPatreonTier'))
-            or any(item.get(key) is True for key in ('is_locked', 'isLocked', 'locked')))
+            or any(item.get(key) is True for key in ('is_locked', 'isLocked', 'locked',
+                                                    'is_premium_stream', 'isPremiumStream')))
 
 
 class TrackLinks(HTMLParser):

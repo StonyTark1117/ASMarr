@@ -109,6 +109,7 @@ class CreatorAudioSourceTests(unittest.TestCase):
         for detail in (dict(public, required_tier_id='paid-tier'),
                        dict(public, requiredTierId='paid-tier'),
                        dict(public, required_patreon_tier='paid-tier'),
+                       dict(public, is_premium_stream=True),
                        dict(public, audioFile={'id': 'file-id', 'isLocked': True})):
             with self.subTest(detail=detail):
                 http = HTTP([Response(), Response(body=detail)])
