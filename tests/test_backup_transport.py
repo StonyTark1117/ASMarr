@@ -102,6 +102,16 @@ class BackupTransportTests(unittest.TestCase):
         with patch.object(puller,'ssh',side_effect=self.transport):result=puller.pull(self.policy)
         self.assertFalse(result['sourceBackupFresh']);self.assertTrue(result['encryptedOnly'])
         self.assertGreater(result['sourceBackupAgeSeconds'],36*3600)
+        self.assertTrue(result['retentionDeferred'])
+
+    def test_invalid_source_timestamp_never_displaces_existing_backups(self):
+        self.dest.mkdir(mode=0o700)
+        for name in self.names:(self.dest/name).write_bytes(self.data)
+        self.names=['asmarr-full-20261399T010101000000Z-00000001.cms']
+        self.rows=[{'name':self.names[0],'size':len(self.data),'sha256':hashlib.sha256(self.data).hexdigest()}]
+        with patch.object(puller,'ssh',side_effect=self.transport):
+            with self.assertRaises(ValueError):puller.pull(self.policy)
+        self.assertEqual(3,len(list(self.dest.glob('*.cms'))))
 
 
 if __name__=='__main__':unittest.main()

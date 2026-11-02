@@ -50,7 +50,13 @@ def pull(policy):
         if (not NAME.fullmatch(name) or name in names or type(row['size']) is not int
                 or not 0 < row['size'] <= 4 * 1024 ** 3 or not re.fullmatch('[a-f0-9]{64}', row['sha256'])):
             raise ValueError('invalid_remote_inventory')
+        datetime.strptime(name[len('asmarr-full-'):].split('-',1)[0],'%Y%m%dT%H%M%S%fZ')
         names.add(name)
+    latest = max(rows, key=lambda r: r['name'])
+    created = datetime.strptime(latest['name'][len('asmarr-full-'):].split('-',1)[0],
+                                '%Y%m%dT%H%M%S%fZ').replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc)-created).total_seconds()
+    fresh = -300 <= age <= 36*3600
     for row in sorted(rows, key=lambda r: r['name'])[-keep:]:
         path = destination / row['name']
         if path.exists() or path.is_symlink():
@@ -70,19 +76,15 @@ def pull(policy):
             Path(temporary).unlink(missing_ok=True)
     files = sorted((p for p in destination.iterdir() if NAME.fullmatch(p.name)), reverse=True)
     pruned = 0
-    for path in files[keep:]:
+    for path in files[keep:] if fresh else []:
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1: raise ValueError('unsafe_retention_target')
         path.unlink(); pruned += 1
-    latest = max(rows, key=lambda r: r['name'])
-    created = datetime.strptime(latest['name'][len('asmarr-full-'):].split('-',1)[0],
-                                '%Y%m%dT%H%M%S%fZ').replace(tzinfo=timezone.utc)
-    age = (datetime.now(timezone.utc)-created).total_seconds()
-    fresh = -300 <= age <= 36*3600
     report = {'verifiedAt': datetime.now(timezone.utc).isoformat(), 'copied': copied,
               'pruned': pruned, 'retention': keep, 'latest': latest,
               'sourceBackupCreatedAt':created.isoformat(),'sourceBackupAgeSeconds':int(age),
               'sourceBackupFresh':fresh,'status':'verified' if fresh else 'copied-source-backup-overdue-or-clock-invalid',
+              'retentionDeferred':not fresh,
               'encryptedOnly': True, 'restoreStillRequiresRecoveryKey': True}
     fd, temporary = tempfile.mkstemp(prefix='.receipt-', dir=destination)
     try:

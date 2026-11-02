@@ -90,6 +90,8 @@ It also records the source backup's actual creation time/age. A new copy receipt
 does not make an old backup fresh: source age over 36 hours (or a clock more than
 five minutes ahead) returns a nonzero status even when the encrypted copy itself
 verified successfully.
+Retention is deferred while source freshness/clock checks fail; an invalid
+source timestamp is rejected before any existing copy can be pruned.
 Default off-host retention is 30 completed bundles (configurable 2–365).
 
 `packaging/asmarr-backup-pull.service` and `.timer` provide an hourly systemd
