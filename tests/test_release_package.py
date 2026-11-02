@@ -67,6 +67,11 @@ class ReleasePackageTests(unittest.TestCase):
         (self.repo/'ops/admin_login.py').write_text('dirty fixture')
         with self.assertRaises(subprocess.CalledProcessError):self.package()
 
+    def test_accidental_runtime_credentials_are_rejected_before_publication(self):
+        (self.publish/'auth.json').write_text('generated fixture credential')
+        with self.assertRaises(ValueError):self.package()
+        self.assertFalse((self.root/'output').exists())
+
     def test_existing_installation_guard_runs_before_package_or_system_changes(self):
         prefix=self.root/'prefix';(prefix/'opt/asmarr').mkdir(parents=True)
         audio=self.root/'audio';audio.mkdir();video=self.root/'video';video.mkdir()

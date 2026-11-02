@@ -15,6 +15,15 @@ def git(repository,*args):
     return subprocess.check_output(['git','-C',str(repository),*args])
 
 
+def check_public_path(path):
+    name=path.name.lower()
+    if (name in {'auth.json','integrations.json','source-secrets.json','initial-admin.txt',
+                 'sshforcodex','sshpass','backup-policy.json','backup-recipient.pem'}
+            or name.startswith('.env') or name.endswith(('.db','.db-wal','.db-shm','.cms','.key','.pem'))
+            or any(part in {'.git','backups','acceptance'} for part in path.parts)):
+        raise ValueError('Runtime state or credentials must never enter a public release')
+
+
 def build(repository,publish,toolchain,output,commit,version):
     repository,publish,toolchain,output=map(Path,(repository,publish,toolchain,output))
     if not re.fullmatch('[a-f0-9]{40}',commit) or not re.fullmatch(r'\d+\.\d+\.\d+',version):raise ValueError('Full commit and semantic version required')
@@ -31,6 +40,7 @@ def build(repository,publish,toolchain,output,commit,version):
     for path in sorted(publish.rglob('*')):
         relative=path.relative_to(publish)
         if '__pycache__' in relative.parts or path.suffix=='.pyc':continue
+        check_public_path(relative)
         if path.is_symlink():raise ValueError('Published tree must not contain symlinks')
         if path.is_file():add('application/'+relative.as_posix(),path.read_bytes(),bool(path.stat().st_mode&0o111))
     names=git(repository,'ls-tree','-r','--name-only',commit,'--','ops','docs','packaging','README.md').decode().splitlines()
