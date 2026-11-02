@@ -1,4 +1,5 @@
 import json
+import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -154,8 +155,9 @@ class CreatorAudioSourceTests(unittest.TestCase):
                                                '_authorized_creator_targets': [['hotaudio', url]]}, HTTP([]))
             self.assertFalse(list(Path(directory).rglob('*.part')))
 
-    @unittest.skipUnless(shutil.which('chromium') or shutil.which('chromium-browser'),
-                         'system Chromium unavailable')
+    @unittest.skipUnless((shutil.which('chromium') or shutil.which('chromium-browser'))
+                         and importlib.util.find_spec('playwright'),
+                         'Chromium or Python Playwright unavailable')
     def test_hotaudio_browser_cap_rejects_before_copy(self):
         from playwright.sync_api import sync_playwright
         with sync_playwright() as playwright:
