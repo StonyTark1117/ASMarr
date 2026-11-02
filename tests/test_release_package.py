@@ -6,12 +6,14 @@ import json
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import tarfile
 import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'ops'))
 def load(name):
     spec=importlib.util.spec_from_file_location(name,ROOT/('ops/'+name+'.py'))
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
@@ -39,6 +41,8 @@ class ReleasePackageTests(unittest.TestCase):
         self.commit=subprocess.check_output(['git','-C',str(self.repo),'rev-parse','HEAD'],text=True).strip()
         self.publish=self.root/'publish';self.publish.mkdir();(self.publish/'providers').mkdir()
         (self.publish/'providers/bridge.py').write_text('fixture provider')
+        for name in ('Prefix','Prefix.Core'):
+            (self.publish/name).mkdir();(self.publish/name/'notice.txt').write_text('fixture notice')
         (self.publish/'ASMarr').write_text('fixture application');(self.publish/'ASMarr').chmod(0o755)
         (self.publish/'ASMarr.deps.json').write_text('{"libraries":{"GeneratedFixture/42.0.0":{"type":"package"}}}')
         (self.publish/'build-identity.json').write_text(json.dumps({'sourceCommit':self.commit,'version':'0.3.0'}))
@@ -55,6 +59,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual('0.3.0',result['version'])
         self.assertTrue(first['package'].endswith('asmarr-0.3.0-linux-x64.tar.gz'))
         self.assertEqual(first['artifactSha256'],result['artifactSha256'])
+        self.assertEqual(installer.artifact_hash(output/'application'),result['artifactSha256'])
         self.assertTrue((output/'application/ops/admin_login.py').is_file())
         self.assertEqual(0o755,(output/'application/toolchain/deno').stat().st_mode&0o777)
         with tarfile.open(first['productionPayload']) as archive:

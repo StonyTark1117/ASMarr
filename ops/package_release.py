@@ -4,7 +4,7 @@ import gzip
 import hashlib
 import io
 import json
-from pathlib import Path
+from pathlib import Path,PurePosixPath
 import re
 import subprocess
 import tarfile
@@ -86,7 +86,9 @@ def build(repository,publish,toolchain,output,commit,version):
         add('application/toolchain/'+path.name,data,path.name in ('yt-dlp','deno'))
     if not all('application/toolchain/'+name in files for name in ('yt-dlp','deno','yt-dlp-LICENSE.txt','deno-LICENSE.txt')):raise ValueError('Toolchain incomplete')
     fingerprint=hashlib.sha256()
-    for name,(data,_) in sorted(files.items()):
+    # Match release_integrity.artifact_hash's Path ordering, not string ordering:
+    # directory "A" sorts before sibling "A.Core" even though '/' sorts after '.'.
+    for name,(data,_) in sorted(files.items(),key=lambda item:PurePosixPath(item[0]).parts):
         fingerprint.update(name.removeprefix('application/').encode()+b'\0'+hashlib.sha256(data).hexdigest().encode()+b'\n')
     manifest={'format':1,'version':version,'sourceCommit':commit,'platform':'debian12-linux-x64',
               'artifactSha256':fingerprint.hexdigest(),

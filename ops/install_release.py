@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+from release_integrity import artifact_hash
 
 
 def checksum(path):
@@ -46,6 +47,7 @@ def unpack(package,expected,destination):
                 target.chmod(entry['mode'])
     for name in ('ASMarr','providers/bridge.py','ops/admin_login.py','toolchain/yt-dlp','toolchain/deno','packaging/asmarr.service'):
         if not(destination/'application'/name).is_file():raise ValueError('Release is incomplete')
+    if artifact_hash(destination/'application')!=manifest.get('artifactSha256'):raise ValueError('Release whole-tree fingerprint mismatch')
     return manifest
 
 
