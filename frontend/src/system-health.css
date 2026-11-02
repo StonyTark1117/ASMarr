@@ -1,0 +1,15 @@
+.health-checks { margin: 14px 0; }
+.health-checks > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.85fr) minmax(0, 1.4fr);
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #233143;
+  font-size: 12px;
+}
+.health-checks dt { color: #aab7c9; }
+.health-checks dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.health-checks small { display: block; color: #93a3b8; font-size: 11px; margin-top: 4px; }
+.health-actions { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.system-health .section-heading { flex-wrap: wrap; gap: 8px; }
+.health-warning { color: #efb57c; }

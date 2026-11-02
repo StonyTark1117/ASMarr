@@ -28,6 +28,7 @@ import {
   Trash2,
 } from "lucide-react";
 import "./style.css";
+import SystemHealth from "./SystemHealth";
 
 type Row = Record<string, any>;
 const routes = [
@@ -1049,39 +1050,10 @@ function App() {
                     Explore your creators <ChevronRight size={15} />
                   </button>
                 </section>
-                <section className="panel">
-                  <div className="section-heading">
-                    <h2>Rollout progress</h2>
-                    <Badge value={status.mode} />
-                  </div>
-                  <div className="rollout">
-                    <div>
-                      <Check size={17} />
-                      <span>Production state imported</span>
-                    </div>
-                    <div>
-                      <Clock size={17} />
-                      <span>Three daily shadow comparisons</span>
-                      <b>{status.qualifiedShadowDays || 0} / 3</b>
-                    </div>
-                    <div>
-                      <Shield size={17} />
-                      <span>Production acceptance & cutover</span>
-                    </div>
-                  </div>
-                  <p className="muted">
-                    The existing scraper remains active during observation.
-                  </p>
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      navigate("System");
-                      setTab("Tasks");
-                    }}
-                  >
-                    Scheduled tasks <ChevronRight size={15} />
-                  </button>
-                </section>
+                <SystemHealth status={status} tick={tick} read={api} open={(target) => {
+                  navigate("System");
+                  setTab(target);
+                }} />
               </div>
               <section className="panel">
                 <div className="section-heading">
@@ -2501,7 +2473,7 @@ function App() {
         </main>
         <footer>
           ASMarr <span>·</span> Built for unhurried listening{" "}
-          <span className="footer-right">v0.2.0</span>
+          <span className="footer-right">{status.version ? `v${status.version}` : "Version unavailable"}</span>
         </footer>
       </div>
       {removingCreator !== null && <CreatorRemovalDialog creatorId={removingCreator} onClose={(removed) => {
