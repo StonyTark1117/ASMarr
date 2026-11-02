@@ -32,11 +32,12 @@ class RecoveryRuntimeTests(unittest.TestCase):
             subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes',
                             '-keyout',str(config/'tls.key'),'-out',str(config/'tls.pem'),
                             '-days','1','-subj','/CN=localhost'],check=True,capture_output=True)
-            def launch(app,state,config):
+            def launch(app,state,config,maintenance=False):
                 with socket.socket() as sock:
                     sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
                 env=dict(os.environ,ASMARR_STATE=str(state),ASMARR_CONFIG=str(config),
                          ASPNETCORE_URLS='https://127.0.0.1:'+str(port),
+                         ASMARR_MAINTENANCE_HOLD='1' if maintenance else '0',
                          ASPNETCORE_Kestrel__Certificates__Default__Path=str(config/'tls.pem'),
                          ASPNETCORE_Kestrel__Certificates__Default__KeyPath=str(config/'tls.key'))
                 process=subprocess.Popen([str(app/'ASMarr')],cwd=app,env=env,
@@ -48,7 +49,9 @@ class RecoveryRuntimeTests(unittest.TestCase):
                         try:
                             with urllib.request.urlopen('https://127.0.0.1:'+str(port)+'/healthz',
                                                         context=ssl._create_unverified_context(),timeout=1) as response:
-                                if response.status==200:return process
+                                if response.status==200:
+                                    process.fixture_url='https://127.0.0.1:'+str(port)
+                                    return process
                         except OSError:time.sleep(.1)
                     raise RuntimeError('Isolated recovery app did not start')
                 except Exception:
@@ -61,10 +64,23 @@ class RecoveryRuntimeTests(unittest.TestCase):
             with contextlib.closing(sqlite3.connect(state/'asmarr.db')) as db:
                 with db:
                     db.execute('UPDATE tasks SET enabled=0')
+                    db.execute("DELETE FROM settings WHERE key='recovery.hold'")
                     db.execute("UPDATE settings SET value='production' WHERE key='mode'")
                     db.execute("INSERT INTO creators(id,name,path,monitor_video) VALUES(1,'Generated fixture','/not-mounted-fixture',1)")
                     db.execute("INSERT INTO commands(id,name,arguments,state,created) VALUES('fixture-do-not-replay','creator-remove','{}','queued','2026-11-02T00:00:00Z')")
                     db.execute("INSERT INTO backfill_jobs(id,creator_id,media_kind,state,started,updated) VALUES('fixture-history',1,'Video','running','2026-11-02','2026-11-02')")
+            process=launch(ROOT/'publish',state,config,maintenance=True)
+            try:
+                time.sleep(2)
+                api_key=json.loads((config/'auth.json').read_text())['apiKey']
+                request=urllib.request.Request(process.fixture_url+'/api/v1/system/status',headers={'X-Api-Key':api_key})
+                with urllib.request.urlopen(request,context=ssl._create_unverified_context()) as response:
+                    self.assertTrue(json.load(response)['maintenanceHeld'])
+                with contextlib.closing(sqlite3.connect(state/'asmarr.db')) as db:
+                    self.assertEqual('queued',db.execute('SELECT state FROM commands').fetchone()[0])
+                    self.assertEqual('running',db.execute('SELECT state FROM backfill_jobs').fetchone()[0])
+            finally:
+                process.terminate();process.wait(timeout=20)
             keys=recovery.init_key(root/'keys')
             (config/'backup-recipient.pem').write_bytes(Path(keys['recipientCertificate']).read_bytes())
             (config/'backup-policy.json').write_text('{"keepLocal":2}');(config/'backup-policy.json').chmod(0o600)

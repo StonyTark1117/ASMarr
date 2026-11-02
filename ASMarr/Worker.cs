@@ -13,6 +13,13 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
     readonly string owner=Guid.NewGuid().ToString("N");
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Root-owned upgrade drop-in only. Do not even recover interrupted
+        // work while an operator verifies a replacement against frozen state.
+        if(Environment.GetEnvironmentVariable("ASMARR_MAINTENANCE_HOLD")=="1")
+        {
+            while(!stoppingToken.IsCancellationRequested)await Task.Delay(TimeSpan.FromSeconds(2),stoppingToken);
+            return;
+        }
         // A terminated process cannot resume an executing command. Backfill
         // checkpoints are safe to requeue; other interrupted mutations remain
         // available for explicit review.
