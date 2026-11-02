@@ -326,75 +326,101 @@ def backfill(db, cfg, secrets, args, core):
         channel_start = int(cursor.get('channel', 0)) if cursor.get('phase') == 'youtube' else len(channels)
         for channel_index, channel_id in enumerate(channels[channel_start:], start=channel_start):
             channel = {'creator': creator['name'], 'channel_id': channel_id}
-            entries = core.youtube.listing(channel, cfg, cfg.get('video_history_limit', 10000))
             entry_start = int(cursor.get('index', 0)) if (cursor.get('phase') == 'youtube'
                                                             and channel_index == channel_start) else 0
-            for entry_index, entry in enumerate(entries[entry_start:], start=entry_start):
+            page_size = max(1, min(500, int(cfg.get('video_history_page_size', 100))))
+            page_budget = max(1, int(cfg.get('video_youtube_history_pages', 5)))
+            exhausted = False
+            for _ in range(page_budget):
                 if not _video_monitoring_enabled(db, creator_id):
                     raise InterruptedError('video_monitoring_disabled')
-                discovered += 1
-                ok, _ = core.youtube.eligibility(entry, cfg)
-                if ok:
-                    ok, _ = core.title_passes(entry['title'], cfg, trusted=True,
-                                              topic_pattern=core.youtube.TOPIC_PATTERN)
-                if ok:
-                    url = 'https://www.youtube.com/watch?v=' + entry['id']
-                    key = _recording(db, core, 'youtube:' + entry['id'], 'youtube:' + channel_id,
-                                     creator['name'], entry['title'], url, core.youtube.published(entry))
-                    _, added = add_candidate(db, key, 'youtube', url, details=entry)
-                    eligible += int(added)
-                total += 1
-                _backfill_checkpoint(db, job_id, discovered, eligible, total,
-                                     {'phase': 'youtube', 'channel': channel_index,
-                                      'index': entry_index + 1})
+                entries = core.youtube.listing(channel, cfg, entry_start + page_size,
+                                               start=entry_start + 1)
+                for entry in entries:
+                    if not _video_monitoring_enabled(db, creator_id):
+                        raise InterruptedError('video_monitoring_disabled')
+                    discovered += 1
+                    ok, _ = core.youtube.eligibility(entry, cfg)
+                    if ok:
+                        ok, _ = core.title_passes(entry['title'], cfg, trusted=True,
+                                                  topic_pattern=core.youtube.TOPIC_PATTERN)
+                    if ok:
+                        url = 'https://www.youtube.com/watch?v=' + entry['id']
+                        key = _recording(db, core, 'youtube:' + entry['id'], 'youtube:' + channel_id,
+                                         creator['name'], entry['title'], url, core.youtube.published(entry))
+                        _, added = add_candidate(db, key, 'youtube', url, details=entry)
+                        eligible += int(added)
+                    total += 1
+                    entry_start += 1
+                    _backfill_checkpoint(db, job_id, discovered, eligible, total,
+                                         {'phase': 'youtube', 'channel': channel_index,
+                                          'index': entry_start})
+                if len(entries) < page_size:
+                    exhausted = True
+                    break
+            if not exhausted:
+                updated = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                db.execute("UPDATE backfill_jobs SET state='interrupted',updated=?,error='youtube_history_continuation' WHERE id=?",
+                           (updated, job_id)); db.commit()
+                return {'id': job_id, 'state': 'interrupted', 'discovered': discovered,
+                        'eligible': eligible, 'total': total}
             cursor = {'phase': 'youtube', 'channel': channel_index + 1, 'index': 0}
             _backfill_checkpoint(db, job_id, discovered, eligible, total, cursor)
         if cursor.get('phase') == 'youtube':
             cursor = {'phase': 'reddit', 'subreddit': 0, 'page': 0, 'after': None}
             _backfill_checkpoint(db, job_id, discovered, eligible, total, cursor)
-        # Reddit account history is read from configured subreddit feeds and is
-        # paged until exhausted. Outbound YouTube links share provider IDs with the
-        # channel path, so cross-posts cannot create a second transfer.
+        # Cover both configured feeds and the linked accounts' submitted history.
+        # Keep the existing feed cursor format so interrupted scans can resume.
+        # Provider identity deduplication is shared across both inventories.
         reddit_handles = {r['handle'].casefold() for r in identities if r['kind'] == 'reddit'}
         continuation_pending = False
         if reddit_handles:
             reddit = core.Reddit(core.HTTP(), secrets.get('reddit', {}))
-            subreddits = cfg.get('subreddits', [])
-            subreddit_start = int(cursor.get('subreddit', 0)) if cursor.get('phase') == 'reddit' else len(subreddits)
-            for subreddit_index, sub in enumerate(subreddits[subreddit_start:], start=subreddit_start):
-                after = cursor.get('after') if subreddit_index == subreddit_start else None
-                for _ in range(cfg.get('video_reddit_history_pages', 100)):
-                    if not _video_monitoring_enabled(db, creator_id):
-                        raise InterruptedError('video_monitoring_disabled')
-                    posts, after = reddit.page(sub, after)
-                    for post in posts:
+            inventories = [('reddit', 'subreddit', cfg.get('subreddits', []), reddit.page),
+                           ('reddit_accounts', 'account', sorted(reddit_handles), reddit.submitted)]
+            for phase, position_key, sources, fetch in inventories:
+                if cursor.get('phase') != phase:
+                    continue
+                source_start = int(cursor.get(position_key, 0))
+                for source_index, source in enumerate(sources[source_start:], start=source_start):
+                    after = cursor.get('after') if source_index == source_start else None
+                    for _ in range(max(1, int(cfg.get('video_reddit_history_pages', 100)))):
                         if not _video_monitoring_enabled(db, creator_id):
                             raise InterruptedError('video_monitoring_disabled')
-                        if post.get('author', '').casefold() not in reddit_handles:
-                            continue
-                        discovered += 1
-                        if post.get('over_18'):
-                            continue
-                        ok, _ = core.title_passes(post.get('title', ''), cfg)
-                        if not ok:
-                            continue
-                        for provider, normalized in reddit_video_targets(
-                                post, cfg.get('youtube_min_duration_seconds', 180)):
-                            key = _recording(db, core, 'reddit:' + post['id'], 'reddit:' + sub,
-                                             creator['name'], post.get('title', ''), normalized,
-                                             int(post.get('created_utc', 0)))
-                            _, added = add_candidate(db, key, provider, normalized, post=post)
-                            eligible += int(added); total += 1
-                    next_cursor = ({'phase': 'reddit', 'subreddit': subreddit_index,
-                                    'page': 0, 'after': after} if after else
-                                   {'phase': 'reddit', 'subreddit': subreddit_index + 1,
-                                    'page': 0, 'after': None})
-                    _backfill_checkpoint(db, job_id, discovered, eligible, total, next_cursor)
-                    if not after:
+                        posts, after = fetch(source, after)
+                        for post in posts:
+                            if not _video_monitoring_enabled(db, creator_id):
+                                raise InterruptedError('video_monitoring_disabled')
+                            if post.get('author', '').casefold() not in reddit_handles:
+                                continue
+                            discovered += 1
+                            if post.get('over_18'):
+                                continue
+                            ok, _ = core.title_passes(post.get('title', ''), cfg)
+                            if not ok:
+                                continue
+                            for provider, normalized in reddit_video_targets(
+                                    post, cfg.get('youtube_min_duration_seconds', 180)):
+                                key = _recording(db, core, 'reddit:' + post['id'], 'reddit:' + source,
+                                                 creator['name'], post.get('title', ''), normalized,
+                                                 int(post.get('created_utc', 0)))
+                                _, added = add_candidate(db, key, provider, normalized, post=post)
+                                eligible += int(added); total += 1
+                        next_cursor = ({'phase': phase, position_key: source_index,
+                                        'page': 0, 'after': after} if after else
+                                       {'phase': phase, position_key: source_index + 1,
+                                        'page': 0, 'after': None})
+                        _backfill_checkpoint(db, job_id, discovered, eligible, total, next_cursor)
+                        if not after:
+                            break
+                    if after:
+                        continuation_pending = True
                         break
-                if after:
-                    continuation_pending = True
+                if continuation_pending:
                     break
+                if phase == 'reddit':
+                    cursor = {'phase': 'reddit_accounts', 'account': 0, 'after': None}
+                    _backfill_checkpoint(db, job_id, discovered, eligible, total, cursor)
         if continuation_pending:
             updated = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
             db.execute("UPDATE backfill_jobs SET state='interrupted',updated=?,error='reddit_history_continuation' WHERE id=?",

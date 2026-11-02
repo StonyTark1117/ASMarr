@@ -99,6 +99,17 @@ class YouTubeTests(unittest.TestCase):
             with self.assertRaisesRegex(y.YouTubeError, 'not_approved'):
                 y.metadata('https://www.youtube.com/watch?v=video000001', self.config())
 
+    def test_history_page_range_does_not_change_default_audio_poll_limit(self):
+        with patch.object(y, 'run_json', return_value={'channel_id':CHANNEL['channel_id'],'entries':[]}) as run:
+            y.listing(CHANNEL, self.config(), 10200, start=10101)
+            args = run.call_args.args[0]
+            self.assertEqual(args[args.index('--playlist-start')+1], '10101')
+            self.assertEqual(args[args.index('--playlist-end')+1], '10200')
+            y.listing(CHANNEL, self.config())
+            args = run.call_args.args[0]
+            self.assertEqual(args[args.index('--playlist-start')+1], '1')
+            self.assertEqual(args[args.index('--playlist-end')+1], '50')
+
     def test_saved_file_is_audio_only_tagged_and_crash_recoverable(self):
         cfg = self.config()
         url = 'https://www.youtube.com/watch?v=video000001'

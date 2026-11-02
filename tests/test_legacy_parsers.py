@@ -47,6 +47,18 @@ class Tests(unittest.TestCase):
         self.assertEqual(s.targets({'url':'https://i.redd.it/picture.gif','selftext':'https://soundgasm.net/u/a'},{}),[])
         result=s.targets({'url':'https://i.redd.it/picture.jpeg','selftext':'Listen at https://soundgasm.net/u/a/track'}, {})
         self.assertEqual(result,[['soundgasm','https://soundgasm.net/u/a/track']])
+    def test_reddit_submitted_uses_oauth_listing_and_continuation(self):
+        from unittest.mock import Mock
+        http = Mock()
+        http.get.return_value = Response(data={'data':{'children':[{'kind':'t3','data':{'id':'post1'}}], 'after':'t3_post1'}})
+        reddit = s.Reddit(http, {})
+        reddit.token = 'fixture-token'
+        posts, after = reddit.submitted('creator/name', 't3_prior')
+        self.assertEqual(posts, [{'id':'post1'}])
+        self.assertEqual(after, 't3_post1')
+        self.assertEqual(http.get.call_args.args[0], 'https://oauth.reddit.com/user/creator%2Fname/submitted.json')
+        self.assertEqual(http.get.call_args.kwargs['params']['after'], 't3_prior')
+        self.assertEqual(http.get.call_args.kwargs['headers']['Authorization'], 'Bearer fixture-token')
     def test_soundgasm_html_and_empty_detection(self):
         class Http:
             def get(self,*a,**kw):return Response('<div class="sound-details"><a href="https://soundgasm.net/u/a/one"><b>[F4M]</b> hypnosis</a><span class="soundDescription">relax &amp; rest</span></div>')

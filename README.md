@@ -66,6 +66,14 @@ media directories or video backfills. Identity ownership is source-scoped, so
 different Reddit/Soundgasm handles resolve to the same creator and profile without
 cross-source handle collisions.
 
+Video monitoring is opt-in per creator. Enabling it starts a resumable scan of
+known recordings, linked YouTube channels, configured Reddit feeds, and linked
+Reddit accounts' submitted history. YouTube history is paged without a total
+item cap; Reddit follows the continuation tokens exposed by its API. These scans
+cover history available from the providers, not deleted posts or history their
+APIs no longer expose. Page checkpoints survive transient failures, and disabling
+video monitoring stops further discovery without deleting imported media.
+
 Acquisition profiles preserve the migrated legacy text policy unless custom
 fields are supplied. Custom fields are `allowedSpeakers` and `allowedAudiences`
 (arrays of `F`, `M`, `NB`, `A`, or `ANY`), `requireSpeakerTag`,

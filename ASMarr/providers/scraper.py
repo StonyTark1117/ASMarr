@@ -392,6 +392,10 @@ class Reddit:
         if not self.token:
             raise SourceError('oauth_token_missing')
     def page(self, sub, after=None):
+        return self._listing('/r/' + quote(sub, safe='') + '/new.json', after)
+    def submitted(self, username, after=None):
+        return self._listing('/user/' + quote(username, safe='') + '/submitted.json', after)
+    def _listing(self, path, after=None):
         if not self.token:
             self.authenticate()
         params = {'limit': 100, 'raw_json': 1, 'include_over_18': 'on'}
@@ -399,7 +403,7 @@ class Reddit:
             params['after'] = after
         for attempt in range(2):
             try:
-                with self.http.get('https://oauth.reddit.com/r/' + quote(sub, safe='') + '/new.json',
+                with self.http.get('https://oauth.reddit.com' + path,
                                    headers={'Authorization': 'Bearer ' + self.token}, params=params) as r:
                     body = r.json()
                 break

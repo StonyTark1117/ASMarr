@@ -50,6 +50,9 @@ class VideoTests(unittest.TestCase):
                     'download_root': str(self.downloads), 'video_free_space_gib': 0,
                     'video_concurrency': 1, 'youtube_binary': '/usr/bin/false'}
         self.db.commit()
+        submitted = patch.object(b.core.Reddit, 'submitted', return_value=([], None))
+        self.submitted = submitted.start()
+        self.addCleanup(submitted.stop)
     def tearDown(self): self.db.close(); self.temp.cleanup()
 
     def video_file(self, name='source.mp4', audio=False):
@@ -334,6 +337,62 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(v.reddit_video_targets(dict(base, over_18=True), 180), [])
         short = dict(base, secure_media={'reddit_video':{'duration':30}}, selftext='')
         self.assertEqual(v.reddit_video_targets(short, 180), [])
+
+    def test_linked_reddit_history_includes_uploads_outside_configured_feeds(self):
+        self.db.execute("INSERT INTO identities(creator_id,kind,handle) VALUES(1,'reddit','Creator_User')")
+        def post(identifier):
+            return {'id':identifier,'author':'creator_user','title':'[F4A] ASMR visual',
+                    'over_18':False,'created_utc':1704067204,
+                    'url_overridden_by_dest':f'https://v.redd.it/{identifier}',
+                    'secure_media':{'reddit_video':{'duration':300}}}
+        self.submitted.side_effect = [([post('shared'), post('outside')], 'next'),
+                                      ([post('oldest')], None)]
+        cfg = dict(self.cfg, subreddits=['asmr'], video_reddit_history_pages=1)
+        with patch.object(b.core.Reddit, 'page', return_value=([post('shared')], None)) as feed:
+            first = v.backfill(self.db, cfg, {'reddit':{}}, {'creatorId':1}, b.core)
+            self.assertEqual(first['state'], 'interrupted')
+            cursor = json.loads(self.db.execute('SELECT cursor FROM backfill_jobs').fetchone()[0])
+            self.assertEqual((cursor['phase'], cursor['after']), ('reddit_accounts', 'next'))
+            second = v.backfill(self.db, cfg, {'reddit':{}}, {'creatorId':1}, b.core)
+        self.assertEqual(second['state'], 'completed')
+        self.assertEqual(feed.call_count, 1)
+        self.assertEqual([call.args for call in self.submitted.call_args_list],
+                         [('creator_user', None), ('creator_user', 'next')])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM video_candidates').fetchone()[0], 3)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM media_assets WHERE media_kind='Video' AND wanted=1").fetchone()[0], 3)
+
+    def test_youtube_history_continues_beyond_old_limit_and_recovers_failed_page(self):
+        self.db.execute("INSERT INTO identities(creator_id,kind,handle) VALUES(1,'youtube','channel-1')")
+        self.db.execute("""INSERT INTO backfill_jobs(id,creator_id,media_kind,state,cursor,started,updated)
+                         VALUES('resume',1,'Video','interrupted',?,'then','then')""",
+                        (json.dumps({'phase':'youtube','channel':0,'index':10000}),))
+        entries = [{'id':f'video{i:06d}','title':'ASMR sleep','duration':300,
+                    'availability':'public','height':1080} for i in (10001,10002,10003)]
+        cfg = dict(self.cfg, video_history_page_size=2, video_youtube_history_pages=1)
+        with patch.object(b.core.youtube, 'listing', side_effect=[entries[:2],
+                         b.core.youtube.YouTubeError('youtube_rate_limited'), entries[2:]]) as listing:
+            first = v.backfill(self.db, cfg, {}, {'creatorId':1}, b.core)
+            self.assertEqual(first['state'], 'interrupted')
+            with self.assertRaises(b.core.youtube.YouTubeError):
+                v.backfill(self.db, cfg, {}, {'creatorId':1}, b.core)
+            final = v.backfill(self.db, cfg, {}, {'creatorId':1}, b.core)
+        self.assertEqual(final['state'], 'completed')
+        self.assertEqual([(c.args[2],c.kwargs['start']) for c in listing.call_args_list],
+                         [(10002,10001),(10004,10003),(10004,10003)])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM video_candidates').fetchone()[0], 3)
+
+    def test_reddit_account_failure_preserves_page_and_opt_out_prevents_resume(self):
+        self.db.execute("INSERT INTO identities(creator_id,kind,handle) VALUES(1,'reddit','creator_user')")
+        self.submitted.side_effect = b.core.SourceError('http_429')
+        with self.assertRaises(b.core.SourceError):
+            v.backfill(self.db, self.cfg, {}, {'creatorId':1}, b.core)
+        cursor = json.loads(self.db.execute('SELECT cursor FROM backfill_jobs').fetchone()[0])
+        self.assertEqual(cursor['phase'], 'reddit_accounts')
+        self.db.execute('UPDATE creators SET monitor_video=0')
+        self.submitted.reset_mock()
+        result = v.backfill(self.db, self.cfg, {}, {'creatorId':1}, b.core)
+        self.assertEqual(result['state'], 'cancelled')
+        self.submitted.assert_not_called()
 
     def test_reddit_history_continuation_resumes_until_exhausted(self):
         self.db.execute("INSERT INTO identities(creator_id,kind,handle) VALUES(1,'reddit','creator')")
