@@ -40,7 +40,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.publish=self.root/'publish';self.publish.mkdir();(self.publish/'providers').mkdir()
         (self.publish/'providers/bridge.py').write_text('fixture provider')
         (self.publish/'ASMarr').write_text('fixture application');(self.publish/'ASMarr').chmod(0o755)
-        (self.publish/'ASMarr.deps.json').write_text('{"libraries":{}}')
+        (self.publish/'ASMarr.deps.json').write_text('{"libraries":{"GeneratedFixture/42.0.0":{"type":"package"}}}')
         (self.publish/'build-identity.json').write_text(json.dumps({'sourceCommit':self.commit,'version':'0.3.0'}))
 
     def package(self,folder='output'):
@@ -52,6 +52,8 @@ class ReleasePackageTests(unittest.TestCase):
         output=self.root/'unpacked';output.mkdir()
         result=installer.unpack(first['package'],first['sha256'],output)
         self.assertEqual(self.commit,result['sourceCommit'])
+        self.assertEqual('0.3.0',result['version'])
+        self.assertTrue(first['package'].endswith('asmarr-0.3.0-linux-x64.tar.gz'))
         self.assertEqual(first['artifactSha256'],result['artifactSha256'])
         self.assertTrue((output/'application/ops/admin_login.py').is_file())
         self.assertEqual(0o755,(output/'application/toolchain/deno').stat().st_mode&0o777)

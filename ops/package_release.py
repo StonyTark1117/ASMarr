@@ -53,8 +53,8 @@ def build(repository,publish,toolchain,output,commit,version):
     deps=json.loads((publish/'ASMarr.deps.json').read_text())
     for identity,item in sorted(deps.get('libraries',{}).items()):
         if item.get('type') not in ('package','runtimepack'):continue
-        name,version=identity.rsplit('/',1);name=name.removeprefix('runtimepack.');folder=nuget/name.lower()/version
-        record={'package':name,'version':version}
+        name,dependency_version=identity.rsplit('/',1);name=name.removeprefix('runtimepack.');folder=nuget/name.lower()/dependency_version
+        record={'package':name,'version':dependency_version}
         nuspec=next(iter(folder.glob('*.nuspec')),None)
         if nuspec:
             tree=ET.parse(nuspec)
@@ -63,7 +63,7 @@ def build(repository,publish,toolchain,output,commit,version):
                 if node is not None:record[field]=node.text
         for path in sorted(folder.iterdir()) if folder.is_dir() else []:
             if path.is_file() and re.search(r'license|notice|copying',path.name,re.I) and path.stat().st_size<2*1024**2:
-                add('application/notices/nuget/'+name+'/'+version+'/'+path.name,path.read_bytes())
+                add('application/notices/nuget/'+name+'/'+dependency_version+'/'+path.name,path.read_bytes())
         dependencies.append(record)
     frontend=repository/'frontend/node_modules';visited=set()
     def node_notices(name):
