@@ -1,5 +1,4 @@
 import json
-import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -155,35 +154,31 @@ class CreatorAudioSourceTests(unittest.TestCase):
                                                '_authorized_creator_targets': [['hotaudio', url]]}, HTTP([]))
             self.assertFalse(list(Path(directory).rglob('*.part')))
 
-    @unittest.skipUnless((shutil.which('chromium') or shutil.which('chromium-browser'))
-                         and importlib.util.find_spec('playwright'),
-                         'Chromium or Python Playwright unavailable')
-    def test_hotaudio_browser_cap_rejects_before_copy(self):
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                executable_path=shutil.which('chromium') or shutil.which('chromium-browser'),
-                headless=True, chromium_sandbox=True)
-            try:
-                page = browser.new_page()
-                result = page.evaluate('''(source) => {
-                  window.MediaSource = function() {};
-                  MediaSource.prototype.addSourceBuffer = function() {
-                    return {appendBuffer() {}};
-                  };
-                  (0, eval)(source);
-                  const buffer = new MediaSource().addSourceBuffer('audio/mp4');
-                  let rejected = false;
-                  try { buffer.appendBuffer(new Uint8Array(5)); }
-                  catch (error) { rejected = error instanceof RangeError; }
-                  return {rejected, bytes: window.__asmarrCapture.bytes,
-                          chunks: window.__asmarrCapture.chunks.length,
-                          overflow: window.__asmarrCapture.overflow};
-                }''', hotaudio_capture.CAPTURE_SCRIPT.replace('__ASMARR_MAX_BYTES__', '4'))
-                self.assertEqual(result, {'rejected': True, 'bytes': 0,
-                                          'chunks': 0, 'overflow': True})
-            finally:
-                browser.close()
+    @unittest.skipUnless(shutil.which('node'), 'Node.js unavailable')
+    def test_hotaudio_capture_script_rejects_before_copy(self):
+        source = hotaudio_capture.CAPTURE_SCRIPT.replace('__ASMARR_MAX_BYTES__', '4')
+        script = '''global.window = global;
+          global.Audio = function() {};
+          global.MediaSource = function() {};
+          let nativeCalls = 0;
+          MediaSource.prototype.addSourceBuffer = function() {
+            return {appendBuffer() { nativeCalls++; }};
+          };
+          eval(''' + json.dumps(source) + ''');
+          const buffer = new MediaSource().addSourceBuffer('audio/mp4');
+          buffer.appendBuffer(new Uint8Array(4));
+          let rejected = false;
+          try { buffer.appendBuffer(new Uint8Array(5)); }
+          catch (error) { rejected = error instanceof RangeError; }
+          console.log(JSON.stringify({rejected, nativeCalls,
+            bytes: window.__asmarrCapture.bytes,
+            chunks: window.__asmarrCapture.chunks.length,
+            overflow: window.__asmarrCapture.overflow}));'''
+        result = subprocess.run(['node', '-e', script], check=True,
+                                capture_output=True, text=True)
+        self.assertEqual(json.loads(result.stdout),
+                         {'rejected': True, 'nativeCalls': 1,
+                          'bytes': 4, 'chunks': 1, 'overflow': True})
 
 
 if __name__ == '__main__':
