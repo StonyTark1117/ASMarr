@@ -137,6 +137,7 @@ function App() {
     [sourceForm, setSourceForm] = useState(""),
     [addingCreator, setAddingCreator] = useState(false),
     [removingCreator, setRemovingCreator] = useState<number | null>(null),
+    [removingCreators, setRemovingCreators] = useState<number[] | null>(null),
     [integration, setIntegration] = useState("prowlarr");
   const activePage = useRef("Dashboard");
   const creatorRequest = useRef(0);
@@ -1306,6 +1307,13 @@ function App() {
                     >
                       Unmonitor
                     </button>
+                    <button className="danger-outline" onClick={() => {
+                      if (selected.length === 1) setRemovingCreator(selected[0]);
+                      else setRemovingCreators([...new Set(selected)]);
+                    }}>
+                      <Trash2 size={15} /> {selected.length === 1 ? "Remove Creator" : `Remove Creators (${selected.length})`}
+                    </button>
+                    <button onClick={() => setSelected([])}>Clear selection</button>
                   </>
                 )}
               </div>
@@ -2500,6 +2508,11 @@ function App() {
         setRemovingCreator(null);
         if (removed) { navigate("Creators"); setTick(n => n + 1); }
       }} />}
+      {removingCreators !== null && <BulkCreatorRemovalDialog creatorIds={removingCreators} onClose={(clearIds) => {
+        setRemovingCreators(null);
+        setSelected(ids => ids.filter(id => !clearIds.includes(id)));
+        setTick(n => n + 1);
+      }} />}
       {toast && (
         <div className="toast">
           <Check size={17} />
@@ -2576,6 +2589,117 @@ function CreatorRemovalDialog({ creatorId, onClose }: { creatorId: number; onClo
         {error && <button disabled={busy} onClick={load}>Refresh preview</button>}
         <button className={deleteFiles ? "danger" : "primary"} disabled={busy || !!error || (deleteFiles && confirmation !== plan.name)} onClick={submit}>{deleteFiles ? "Remove and delete files" : "Remove creator, keep files"}</button></div>
     </> : <><p>Loading removal preview…</p><button onClick={() => onClose(false)}>Cancel</button>{error && <button onClick={load}>Retry preview</button>}</>}
+  </dialog>;
+}
+async function removalPreviews(ids: number[]) {
+  const plans: Row[] = [];
+  // Each preview starts a read-only provider process. Bound concurrency rather
+  // than starting one process per checkbox in a large library.
+  for (let offset = 0; offset < ids.length; offset += 3)
+    plans.push(...await Promise.all(ids.slice(offset, offset + 3).map(id => api(`creators/${id}/removal-preview`))));
+  return plans;
+}
+function BulkCreatorRemovalDialog({ creatorIds, onClose }: { creatorIds: number[]; onClose: (clearIds: number[]) => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [plans, setPlans] = useState<Row[]>([]);
+  const [deleteFiles, setDeleteFiles] = useState(false);
+  const [preventReadd, setPreventReadd] = useState(true);
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  const [queueing, setQueueing] = useState(false);
+  const [jobs, setJobs] = useState<Row[]>([]);
+  const [commands, setCommands] = useState<Record<string, Row>>({});
+  const terminal = (state: string) => ["completed", "failed", "interrupted", "cancelled"].includes(state);
+  const busy = queueing || jobs.some(job => !terminal(commands[job.id]?.state));
+  const completed = jobs.filter(job => commands[job.id]?.state === "completed");
+  const allSucceeded = completed.length === creatorIds.length;
+  const phrase = `REMOVE ${creatorIds.length} CREATORS`;
+  const close = () => onClose((busy ? jobs : completed).map(job => job.creatorId));
+  const load = () => {
+    setError(""); setPlans([]);
+    removalPreviews(creatorIds)
+      .then(setPlans).catch(e => setError(e.message));
+  };
+  useEffect(() => { dialog.current?.showModal(); load(); }, []);
+  useEffect(() => {
+    if (!jobs.length) return;
+    let current = true;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const rows: Row[] = [];
+        for (let offset = 0; current && offset < jobs.length; offset += 10)
+          rows.push(...await Promise.all(jobs.slice(offset, offset + 10).map(job => api("commands/" + job.id))));
+        if (current) {
+          setCommands(Object.fromEntries(rows.map(row => [row.id, row])));
+          if (rows.every(row => terminal(row.state))) clearInterval(timer);
+        }
+      } catch (e) { if (current) setError((e as Error).message); }
+      finally { polling = false; }
+    };
+    poll(); const timer = setInterval(poll, 1500);
+    return () => { current = false; clearInterval(timer); };
+  }, [jobs]);
+  const submit = async () => {
+    setError(""); setQueueing(true);
+    try {
+      // Recheck the entire reviewed selection before queueing its first item.
+      // Do not silently accept new paths or a changed creator after confirmation.
+      const fresh = await removalPreviews(plans.map(plan => plan.creatorId));
+      if (fresh.some((plan, i) => plan.planToken !== plans[i].planToken))
+        throw new Error("The selected creators or files changed. Refresh the previews and confirm again; nothing was queued.");
+      for (const plan of plans) {
+        const queued = await api(`creators/${plan.creatorId}/remove`, "POST", {
+          deleteFiles, preventReadd, confirmation: deleteFiles ? plan.name : "", planToken: plan.planToken,
+        });
+        setJobs(rows => [...rows, { id: queued.id, creatorId: plan.creatorId, name: plan.name }]);
+      }
+    } catch (e) { setError((e as Error).message); }
+    finally { setQueueing(false); }
+  };
+  return <dialog ref={dialog} className="removal-dialog" aria-labelledby="bulk-removal-title" onCancel={e => { e.preventDefault(); if (!queueing) close(); }}>
+    <h2 id="bulk-removal-title">{jobs.length ? allSucceeded ? "Creators removed" : busy ? "Removing selected creators" : "Removal results" : `Remove ${creatorIds.length} selected creators`}</h2>
+    {error && <p role="alert" className="removal-warning">{error}</p>}
+    {jobs.length ? <>
+      <p role="status">{completed.length} of {creatorIds.length} creators removed. {queueing ? "Queueing reviewed removals…" : busy ? "Queued removals continue safely in the background." : "Review each result below."}</p>
+      <div className="bulk-removal-results">{plans.map(plan => {
+        const job = jobs.find(row => row.creatorId === plan.creatorId);
+        const command = job && commands[job.id];
+        const result = command?.state === "completed" ? JSON.parse(command.result) : null;
+        return <section key={plan.creatorId} className="bulk-removal-result">
+          <h3>{plan.name}</h3><Badge value={command?.state || (job ? "queued" : "not queued")} />
+          {result && <>
+            <p>{result.deleted.length} files deleted · {result.preserved.length} files kept. Plex: {result.plex?.status?.replaceAll("_", " ")}.</p>
+            {!!result.alreadyMissing?.length && <p>{result.alreadyMissing.length} tracked files were already missing.</p>}
+            {!!result.warnings?.length && <ul>{result.warnings.map((warning: Row) => <li key={warning.path}><code>{warning.path}</code>: {warning.reason.replaceAll("_", " ")}</li>)}</ul>}
+            {result.plex?.status === "cleanup_pending" && <p role="alert">Plex cleanup needs attention. Review this removal in System → Tasks.</p>}
+          </>}
+          {command?.error && <p role="alert">{command.error}</p>}
+          {!job && <p>Not queued; this creator was not removed by this request.</p>}
+        </section>;
+      })}</div>
+      <p className="muted">Completed removals are not undone if another fails. Close after completion to keep failed or unqueued creators selected. Background results remain in System → Tasks. Download-client originals are kept.</p>
+      <button className="primary" disabled={queueing} onClick={close}>{busy ? "Close; continue in background" : "Done"}</button>
+    </> : plans.length ? <>
+      <p>{plans.length} creators · {plans.reduce((n, plan) => n + plan.recordings, 0)} recordings · {new Set(plans.flatMap(plan => plan.files.map((file: Row) => file.path))).size} tracked files · {(plans.reduce((n, plan) => n + plan.bytes, 0) / 1048576).toFixed(1)} MB eligible for deletion</p>
+      <fieldset disabled={queueing}>
+        <legend>Apply to all selected creators</legend>
+        <label className="removal-choice"><input type="radio" name="bulk-remove-files" checked={!deleteFiles} onChange={() => setDeleteFiles(false)} /><span><b>Remove creators, keep files</b><small>Stop managing these creators. Keep their files and Plex entries.</small></span></label>
+        <label className="removal-choice"><input type="radio" name="bulk-remove-files" checked={deleteFiles} onChange={() => setDeleteFiles(true)} /><span><b>Remove creators and delete files</b><small>Delete only reviewed, tracked library files. This cannot be undone.</small></span></label>
+        <label className="removal-choice"><input type="checkbox" checked={preventReadd} onChange={e => setPreventReadd(e.target.checked)} />Prevent automatic re-addition</label>
+        <ul className="bulk-removal-previews">{plans.map(plan => <li key={plan.creatorId}>
+          <b>{plan.name}</b> — {plan.recordings} recordings, {plan.files.length} tracked files
+          <details><summary>Review paths for {plan.name}</summary><ul className="removal-paths">{plan.files.map((file: Row) => <li key={file.path}><code>{file.path}</code> — {file.status.replaceAll("_", " ")}</li>)}</ul></details>
+        </li>)}</ul>
+        <p className="muted">Only the listed creators are affected. Shared files, directories, untracked files and download-client originals are never deleted. Each creator is a separate durable operation; if queueing fails partway, already queued removals continue and results are reported individually.</p>
+        {deleteFiles && <label>Type <b>{phrase}</b> to confirm deleting files for all listed creators<input aria-label="Confirm bulk removal" value={confirmation} onChange={e => setConfirmation(e.target.value)} autoComplete="off" /></label>}
+      </fieldset>
+      <div className="removal-actions"><button disabled={queueing} onClick={() => onClose([])}>Cancel</button>
+        {error && <button disabled={queueing} onClick={load}>Refresh previews</button>}
+        <button className={deleteFiles ? "danger" : "primary"} disabled={queueing || !!error || (deleteFiles && confirmation !== phrase)} onClick={submit}>{deleteFiles ? "Remove creators and delete files" : "Remove creators, keep files"}</button></div>
+    </> : <><p>Loading selected creator previews…</p><button onClick={() => onClose([])}>Cancel</button>{error && <button onClick={load}>Retry previews</button>}</>}
   </dialog>;
 }
 function CommandList({ tick }: { tick: number }) {

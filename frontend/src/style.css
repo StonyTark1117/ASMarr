@@ -1188,3 +1188,8 @@ footer > span {
 .danger, .danger-outline { border: 1px solid #d46b6b; color: #f0aaaa; }
 .danger { background: #ae3434; color: white; }
 .removal-warning { color: #f0aaaa; overflow-wrap: anywhere; }
+.bulk-removal-previews, .bulk-removal-results { max-height: 260px; overflow: auto; }
+.bulk-removal-previews > li { margin: 12px 0; }
+.bulk-removal-result { padding: 12px 0; border-bottom: 1px solid #354153; }
+.bulk-removal-result h3 { display: inline-block; margin: 0 12px 0 0; }
+.bulk-removal-result code { overflow-wrap: anywhere; }

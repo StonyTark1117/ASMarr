@@ -782,3 +782,120 @@ print(file)
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   execFileSync("python3", ["-c", "import sqlite3,sys;db=sqlite3.connect(sys.argv[1]+'/asmarr.db');db.execute(\"UPDATE settings SET value='shadow' WHERE key='mode'\");db.commit()", manifest.state]);
 });
+test("selected creator toolbar supports single and bulk keep/delete removal without touching unselected creators", async ({ page, request }) => {
+  test.setTimeout(90000);
+  const manifest = JSON.parse(readFileSync("./runtime/session.json", "utf8"));
+  const headers = { "X-Api-Key": auth().apiKey };
+  const names = ["Bulk Reader Alpha", "Bulk Reader Beta", "Unselected Reader"];
+  for (const name of names) {
+    expect((await request.post("/api/v1/creators", { headers, data: { name, profileId: 1, monitored: false } })).status()).toBe(201);
+  }
+  const files = JSON.parse(execFileSync("python3", ["-c", `
+import json,sqlite3,sys
+from pathlib import Path
+state=Path(sys.argv[1]);assert state.name=='state' and state.parent.name.startswith('session-')
+root=state.parent/'library';root.mkdir(exist_ok=True)
+files=[]
+with sqlite3.connect(state/'asmarr.db',timeout=30) as db:
+ db.execute("UPDATE settings SET value='production' WHERE key='mode'")
+ db.execute("UPDATE settings SET value=? WHERE key='root'",(str(root),))
+ db.execute("UPDATE tasks SET enabled=0")
+ db.execute("UPDATE commands SET state='cancelled' WHERE state='queued'")
+ for i,name in enumerate(json.loads(sys.argv[2])):
+  file=root/('bulk-removal-'+str(i)+'.mp3');file.write_bytes(b'isolated batch recording');files.append(str(file))
+  db.execute("INSERT INTO assets(key,url,targets,source,creator,title,state,saved_path) VALUES(?,?,'[]','fixture',?,?,'complete',?)",('bulk:fixture:'+str(i),'https://example.invalid/bulk/'+str(i),name,'Batch recording '+str(i),str(file)))
+print(json.dumps(files))
+`, manifest.state, JSON.stringify(names)], { encoding: "utf8" }));
+  await login(page);
+  await page.getByRole("button", { name: "Creators", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Remove Creator", exact: true })).toHaveCount(0);
+  await page.getByLabel("Select " + names[0], { exact: true }).check();
+  await page.getByRole("button", { name: "Remove Creator", exact: true }).click();
+  await expect(page.getByRole("dialog").getByRole("heading", { name: "Remove creator: " + names[0] })).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByLabel("Select " + names[0], { exact: true })).toBeChecked();
+  await page.getByLabel("Select " + names[1], { exact: true }).check();
+  await page.getByRole("button", { name: "Remove Creators (2)", exact: true }).click();
+  let dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("radio", { name: /Remove creators, keep files/ })).toBeChecked();
+  await expect(dialog.getByRole("checkbox", { name: "Prevent automatic re-addition" })).toBeChecked();
+  await expect(dialog.getByText(names[0], { exact: true })).toBeVisible();
+  await expect(dialog.getByText(names[1], { exact: true })).toBeVisible();
+  await expect(dialog.getByText(names[2], { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: "runtime/bulk-removal-preview.png", fullPage: true });
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByLabel("Select " + names[0], { exact: true })).toBeChecked();
+  await page.getByRole("button", { name: "Remove Creators (2)", exact: true }).click();
+  await dialog.getByRole("button", { name: "Remove creators, keep files", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "Creators removed", exact: true })).toBeVisible({ timeout: 45000 });
+  expect(files.every((file: string) => existsSync(file))).toBe(true);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("button", { name: names[2], exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: names[0], exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Remove Creators (2)", exact: true })).toHaveCount(0);
+  for (const name of names.slice(0, 2)) {
+    await request.delete("/api/v1/creator-exclusions/" + encodeURIComponent(name), { headers });
+    expect((await request.post("/api/v1/creators", { headers, data: { name, profileId: 1, monitored: false } })).status()).toBe(201);
+  }
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  for (const name of names.slice(0, 2)) await page.getByLabel("Select " + name, { exact: true }).check();
+  await page.getByRole("button", { name: "Remove Creators (2)", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: /Remove creators and delete files/ }).check();
+  const remove = dialog.getByRole("button", { name: "Remove creators and delete files", exact: true });
+  await expect(remove).toBeDisabled();
+  await dialog.getByLabel("Confirm bulk removal").fill("REMOVE ALL");
+  await expect(remove).toBeDisabled();
+  await dialog.getByLabel("Confirm bulk removal").fill("REMOVE 2 CREATORS");
+  await remove.click();
+  await expect(dialog.getByRole("heading", { name: "Creators removed", exact: true })).toBeVisible({ timeout: 45000 });
+  expect(existsSync(files[0])).toBe(false);
+  expect(existsSync(files[1])).toBe(false);
+  expect(existsSync(files[2])).toBe(true);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("button", { name: names[2], exact: true })).toBeVisible();
+  await expect(page.getByLabel("Select " + names[2], { exact: true })).not.toBeChecked();
+  execFileSync("python3", ["-c", "import sqlite3,sys;db=sqlite3.connect(sys.argv[1]+'/asmarr.db');db.execute(\"UPDATE settings SET value='shadow' WHERE key='mode'\");db.commit()", manifest.state]);
+});
+test("bulk removal rejects stale selection and reports partial queue failure without losing remaining selection", async ({ page, request }) => {
+  test.setTimeout(60000);
+  const manifest = JSON.parse(readFileSync("./runtime/session.json", "utf8"));
+  const headers = { "X-Api-Key": auth().apiKey };
+  const names = ["Partial Batch Alpha", "Partial Batch Beta"];
+  const ids: number[] = [];
+  for (const name of names) {
+    const added = await request.post("/api/v1/creators", { headers, data: { name, profileId: 1, monitored: false } });
+    expect(added.status()).toBe(201); ids.push((await added.json()).id);
+  }
+  execFileSync("python3", ["-c", "import sqlite3,sys;db=sqlite3.connect(sys.argv[1]+'/asmarr.db');db.execute(\"UPDATE settings SET value='production' WHERE key='mode'\");db.execute('UPDATE tasks SET enabled=0');db.commit()", manifest.state]);
+  await login(page);
+  await page.getByRole("button", { name: "Creators", exact: true }).click();
+  for (const name of names) await page.getByLabel("Select " + name, { exact: true }).check();
+  await page.getByRole("button", { name: "Remove Creators (2)", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText(names[0], { exact: true })).toBeVisible();
+  let submitted = 0;
+  page.on("request", req => { if (req.method() === "POST" && /\/creators\/\d+\/remove$/.test(req.url())) submitted++; });
+  const previewUrl = `**/api/v1/creators/${ids[0]}/removal-preview`;
+  await page.route(previewUrl, async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...(await response.json()), planToken: "0".repeat(64) } });
+  });
+  await dialog.getByRole("button", { name: "Remove creators, keep files", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("nothing was queued");
+  expect(submitted).toBe(0);
+  await page.unroute(previewUrl);
+  await dialog.getByRole("button", { name: "Refresh previews", exact: true }).click();
+  await expect(dialog.getByText(names[0], { exact: true })).toBeVisible();
+  await page.route(`**/api/v1/creators/${ids[1]}/remove`, route => route.fulfill({ status: 409, json: { error: "Fixture queue conflict" } }));
+  await dialog.getByRole("button", { name: "Remove creators, keep files", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "Removal results", exact: true })).toBeVisible({ timeout: 30000 });
+  await expect(dialog.getByText("Not queued; this creator was not removed by this request.")).toBeVisible();
+  await expect(dialog.getByRole("alert").first()).toContainText("Fixture queue conflict");
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("button", { name: names[0], exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Select " + names[1], { exact: true })).toBeChecked();
+  await page.getByRole("button", { name: "Clear selection", exact: true }).click();
+  await expect(page.getByLabel("Select " + names[1], { exact: true })).not.toBeChecked();
+  execFileSync("python3", ["-c", "import sqlite3,sys;db=sqlite3.connect(sys.argv[1]+'/asmarr.db');db.execute(\"UPDATE settings SET value='shadow' WHERE key='mode'\");db.commit()", manifest.state]);
+});

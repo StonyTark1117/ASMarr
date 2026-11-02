@@ -140,6 +140,17 @@ creator is explicitly re-added. The removed creator's recordings no longer
 appear in the active library. Settings → Removed creators → Allow re-addition
 reverses a discovery exclusion (including linked handles and aliases).
 
+The Creators screen also exposes **Remove Creator** beside Monitor/Unmonitor
+when one checkbox is selected, and **Remove Creators (N)** for multiple
+selections. Bulk removal reviews every selected creator and path together,
+defaults to keeping files, and requires typing `REMOVE N CREATORS` before
+deleting files. Each creator uses the same individually validated, durable
+removal operation. Results and failures are shown per creator; already queued
+work continues if another request fails. Closing completed results clears only
+successful selections, keeping failed/unqueued creators selected for review.
+Closing while jobs run clears the queued selections; their results remain in
+System → Tasks. **Clear selection** cancels the checkbox selection, not jobs.
+
 **Remove creator and delete files** requires the exact creator name and deletes
 only individually tracked files inside their respective audio/video library
 roots. No folders, untracked artwork, shared/hardlinked files, or download-client
