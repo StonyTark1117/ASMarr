@@ -697,6 +697,8 @@ def save_asset(asset, cfg, http):
         tmp = None
         expected_capture_duration = None
         try:
+            if kind in {'whyp', 'audiochan', 'hotaudio'} and [kind, url] not in cfg.get('_authorized_creator_targets', []):
+                raise MediaError('source_target_not_approved')
             if kind == 'hotaudio':
                 ext = '.m4a'
                 if ext not in cfg.get('allowed_formats', AUDIO_EXTS):

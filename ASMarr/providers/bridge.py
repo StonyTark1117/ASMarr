@@ -34,6 +34,7 @@ STATE = Path(os.environ.get('ASMARR_STATE', '/var/lib/asmarr'))
 CONFIG = Path(os.environ.get('ASMARR_CONFIG', '/etc/asmarr'))
 DB = STATE / 'asmarr.db'
 ALLOWED = {'.m4a', '.mp3', '.aac', '.opus', '.flac', '.wav'}
+CREATOR_AUDIO_KINDS = {'whyp', 'audiochan', 'hotaudio'}
 
 
 def connect(path=DB):
@@ -272,7 +273,10 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
     core.youtube.listing=listing
     monitored={r['name'] for r in db.execute('SELECT name FROM creators WHERE monitored=1')}
     def discovery_targets(post, config):
-        options=original_targets(post,config)
+        # Reddit cross-posts do not prove ownership of a creator-audio profile.
+        # Those sites are monitored only through an approved linked identity.
+        options=[target for target in original_targets(post,config)
+                 if target[0] not in CREATOR_AUDIO_KINDS]
         author=post.get('author','')
         creator=active.get('_identity_creators',{}).get('reddit:'+author.casefold(),active.get('creator_aliases',{}).get(author,author))
         enabled=working.execute('SELECT monitor_video FROM creators WHERE name=?',(creator,)).fetchone()
@@ -463,7 +467,9 @@ def acquire(db,cfg,key):
     row=db.execute('SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=? AND c.monitored=1',(key,)).fetchone()
     if not row: raise ValueError('recording_missing_or_unmonitored')
     source_kind,_,source_handle=row['source'].partition(':')
-    if source_kind in {'whyp','audiochan','hotaudio'}:
+    if source_kind in CREATOR_AUDIO_KINDS:
+        if setting(db,'source.'+source_kind+'.enabled','false' if source_kind=='hotaudio' else 'true')!='true':
+            raise ValueError('source_disabled')
         approved=db.execute('''SELECT 1 FROM identities i JOIN creators c ON c.id=i.creator_id
                 WHERE c.name=? AND c.monitored=1 AND i.enabled=1 AND i.kind=?
                   AND i.handle=? COLLATE NOCASE''',(row['creator'],source_kind,source_handle)).fetchone()
@@ -490,7 +496,20 @@ def acquire(db,cfg,key):
             if not creator_removal.excluded(db,identity['name'],[('youtube',identity['handle'])]):
                 effective['youtube_channels'].append({'creator':identity['name'],'channel_id':identity['handle']})
     priorities=rules.get('sourcePriorities',['soundgasm','youtube','reddit'])
-    asset=dict(row);asset['targets']=json.dumps(sorted(json.loads(row['targets']),key=lambda t:priorities.index(t[0]) if t[0] in priorities else len(priorities)))
+    targets=[]
+    for target in json.loads(row['targets']):
+        kind,url=target
+        if kind in CREATOR_AUDIO_KINDS:
+            if kind!=source_kind:
+                continue
+            if kind=='hotaudio':
+                parts=urllib.parse.urlparse(url).path.split('/')
+                if len(parts)<4 or parts[2].casefold()!=source_handle.casefold():
+                    continue
+        targets.append(target)
+    if not targets:raise ValueError('source_target_not_approved')
+    effective['_authorized_creator_targets']=[target for target in targets if target[0] in CREATOR_AUDIO_KINDS]
+    asset=dict(row);asset['targets']=json.dumps(sorted(targets,key=lambda t:priorities.index(t[0]) if t[0] in priorities else len(priorities)))
     out,url=core.save_asset(asset,effective,core.HTTP())
     with db:
         now=int(time.time()); db.execute("UPDATE assets SET saved_path=?,state='complete',acquired=?,error=NULL,retry_after=0 WHERE key=?",(str(out),now,key))

@@ -1,6 +1,6 @@
 # Creator audio source support
 
-This plan covers public creator posts on Hotaudio, Whyp, and Audiochan. A creator identity should be linked explicitly before ASMarr monitors a profile. Acquisition should honor the creator's current visibility and download settings, validate the resulting audio with `ffprobe`, and preserve the source URL and original title.
+This plan covers public creator posts on Hotaudio, Whyp, and Audiochan. A creator identity must be linked explicitly before ASMarr monitors a profile. Acquisition requires the connector to be enabled and the linked identity to belong to the monitored creator. Reddit cross-post links to these sites are excluded because the post alone does not establish profile ownership. Acquisition should honor the creator's current visibility and download settings, validate the resulting audio with `ffprobe`, and preserve the source URL and original title.
 
 All three sources now have public creator monitoring and acquisition adapters. Whyp cursor pagination enumerated all 195 tracks on a public test profile. Each provider produced a complete, tagged, `ffprobe`-validated file in a temporary local test. Hotaudio remains disabled by default until the production runtime and service sandbox have been qualified.
 

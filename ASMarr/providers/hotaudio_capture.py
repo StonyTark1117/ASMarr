@@ -13,7 +13,7 @@ class CaptureError(ValueError):
 # Hook the SourceBuffer instance created by the site's player. Its prototype
 # method is read-only and replacing it before the page loads breaks playback.
 CAPTURE_SCRIPT = r'''
-window.__asmarrCapture = {chunks: [], bytes: 0, audio: null};
+window.__asmarrCapture = {chunks: [], bytes: 0, maxBytes: __ASMARR_MAX_BYTES__, overflow: false, audio: null};
 const NativeAudio = window.Audio;
 window.Audio = function(...args) {
   const element = new NativeAudio(...args);
@@ -29,6 +29,10 @@ const captureAdd = function(...args) {
   Object.defineProperty(buffer, 'appendBuffer', {
     configurable: true,
     value: function(data) {
+      if (window.__asmarrCapture.bytes + data.byteLength > window.__asmarrCapture.maxBytes) {
+        window.__asmarrCapture.overflow = true;
+        throw new RangeError('asmarr_capture_size_limit');
+      }
       const chunk = new Uint8Array(data).slice();
       window.__asmarrCapture.chunks.push(chunk);
       window.__asmarrCapture.bytes += chunk.length;
@@ -73,7 +77,7 @@ def capture(url, destination, *, max_bytes, max_seconds=1200):
                       '--disable-blink-features=AutomationControlled'])
             try:
                 page = browser.new_page(accept_downloads=True)
-                page.add_init_script(CAPTURE_SCRIPT)
+                page.add_init_script(CAPTURE_SCRIPT.replace('__ASMARR_MAX_BYTES__', str(max_bytes)))
                 page.goto(url, wait_until='domcontentloaded', timeout=30000)
                 if urlparse(page.url).hostname not in {'hotaudio.net', 'www.hotaudio.net'}:
                     raise CaptureError('hotaudio_track_redirected')
@@ -102,9 +106,10 @@ def capture(url, destination, *, max_bytes, max_seconds=1200):
                       const capture = window.__asmarrCapture;
                       return {position: capture.audio.currentTime,
                               ended: capture.audio.ended, bytes: capture.bytes,
-                              chunks: capture.chunks.length};
+                              chunks: capture.chunks.length,
+                              overflow: capture.overflow};
                     }''')
-                    if state['bytes'] > max_bytes:
+                    if state['overflow'] or state['bytes'] > max_bytes:
                         raise CaptureError('hotaudio_capture_size_limit')
                     if state['position'] > last_position + 0.1:
                         last_position, last_progress = state['position'], time.monotonic()

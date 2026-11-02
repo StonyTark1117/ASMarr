@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -93,6 +94,22 @@ class CreatorAudioSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(sources.SourceFailure, 'requires_browser_capture'):
             sources.resolve_audio(HTTP([]), 'hotaudio', 'https://hotaudio.net/u/creator/post')
 
+    def test_creator_audio_targets_need_runtime_approval_before_network(self):
+        cases = [('whyp', 'https://whyp.it/tracks/title-ABC123'),
+                 ('audiochan', 'https://audiochan.com/a/ABC123'),
+                 ('hotaudio', 'https://hotaudio.net/u/creator/post')]
+        with tempfile.TemporaryDirectory() as directory:
+            for kind, url in cases:
+                asset = {'key': kind + ':fixture', 'creator': 'Example', 'title': 'Fixture',
+                         'published': 0, 'targets': json.dumps([[kind, url]])}
+                http = HTTP([])
+                with mock.patch.object(hotaudio_capture, 'capture',
+                                       side_effect=AssertionError('browser reached')) as browser:
+                    with self.assertRaisesRegex(scraper.SourceError, 'source_target_not_approved'):
+                        scraper.save_asset(asset, {'output_root': directory}, http)
+                    browser.assert_not_called()
+                self.assertEqual(http.calls, [])
+
     def test_hotaudio_rejects_nonpublic_track_urls(self):
         for url in ('http://hotaudio.net/u/creator/post',
                     'https://example.com/u/creator/post',
@@ -110,11 +127,56 @@ class CreatorAudioSourceTests(unittest.TestCase):
             asset = {'key': 'hotaudio:short', 'creator': 'Example', 'title': 'Short',
                      'published': 0, 'targets': json.dumps([['hotaudio',
                         'https://hotaudio.net/u/creator/public-post']])}
+            url = 'https://hotaudio.net/u/creator/public-post'
             with mock.patch.object(hotaudio_capture, 'capture', side_effect=incomplete):
                 with self.assertRaisesRegex(scraper.SourceError, 'hotaudio_capture_incomplete'):
-                    scraper.save_asset(asset, {'output_root': directory}, HTTP([]))
+                    scraper.save_asset(asset, {'output_root': directory,
+                                               '_authorized_creator_targets': [['hotaudio', url]]}, HTTP([]))
             self.assertFalse(list(Path(directory).rglob('*.m4a')))
             self.assertFalse(list(Path(directory).rglob('*.part')))
+
+    def test_hotaudio_size_failure_removes_partial(self):
+        url = 'https://hotaudio.net/u/creator/public-post'
+        asset = {'key': 'hotaudio:short', 'creator': 'Example', 'title': 'Short',
+                 'published': 0, 'targets': json.dumps([['hotaudio', url]])}
+        def oversized(_, destination, **kwargs):
+            Path(destination).write_bytes(b'partial')
+            raise hotaudio_capture.CaptureError('hotaudio_capture_size_limit')
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(hotaudio_capture, 'capture', side_effect=oversized):
+                with self.assertRaisesRegex(scraper.SourceError, 'hotaudio_capture_size_limit'):
+                    scraper.save_asset(asset, {'output_root': directory,
+                                               '_authorized_creator_targets': [['hotaudio', url]]}, HTTP([]))
+            self.assertFalse(list(Path(directory).rglob('*.part')))
+
+    @unittest.skipUnless(shutil.which('chromium') or shutil.which('chromium-browser'),
+                         'system Chromium unavailable')
+    def test_hotaudio_browser_cap_rejects_before_copy(self):
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                executable_path=shutil.which('chromium') or shutil.which('chromium-browser'),
+                headless=True, chromium_sandbox=True)
+            try:
+                page = browser.new_page()
+                result = page.evaluate('''(source) => {
+                  window.MediaSource = function() {};
+                  MediaSource.prototype.addSourceBuffer = function() {
+                    return {appendBuffer() {}};
+                  };
+                  (0, eval)(source);
+                  const buffer = new MediaSource().addSourceBuffer('audio/mp4');
+                  let rejected = false;
+                  try { buffer.appendBuffer(new Uint8Array(5)); }
+                  catch (error) { rejected = error instanceof RangeError; }
+                  return {rejected, bytes: window.__asmarrCapture.bytes,
+                          chunks: window.__asmarrCapture.chunks.length,
+                          overflow: window.__asmarrCapture.overflow};
+                }''', hotaudio_capture.CAPTURE_SCRIPT.replace('__ASMARR_MAX_BYTES__', '4'))
+                self.assertEqual(result, {'rejected': True, 'bytes': 0,
+                                          'chunks': 0, 'overflow': True})
+            finally:
+                browser.close()
 
 
 if __name__ == '__main__':

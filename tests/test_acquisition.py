@@ -77,6 +77,52 @@ class AcquisitionTests(unittest.TestCase):
         self.db.execute('INSERT INTO creator_exclusions VALUES(?,?,?,0)',('Removed fixture','[]',json.dumps([{'kind':'youtube','handle':'UC'+'a'*22}])))
         with self.assertRaisesRegex(s.youtube.YouTubeError,'youtube_channel_not_approved'):
             self.youtube_acquisition(legacy_channels=[{'creator':'Creator','channel_id':'UC'+'a'*22}])
+
+    def test_disabled_hotaudio_cannot_capture_direct_track(self):
+        url='https://hotaudio.net/u/Creator/public-track'
+        self.db.execute('CREATE TABLE identities(id INTEGER PRIMARY KEY,creator_id INTEGER,kind TEXT,handle TEXT,enabled INTEGER)')
+        self.db.execute("INSERT INTO identities VALUES(1,1,'hotaudio','Creator',1)")
+        self.db.execute("INSERT INTO settings VALUES('source.hotaudio.enabled','false')")
+        self.db.execute('UPDATE assets SET source=?,targets=? WHERE key=?',
+                        ('hotaudio:Creator',json.dumps([['hotaudio',url]]),self.key))
+        with patch.object(s,'require_mount'),patch.object(s,'save_asset',side_effect=AssertionError('network reached')) as save:
+            with self.assertRaisesRegex(ValueError,'source_disabled'):
+                b.acquire(self.db,self.cfg,self.key)
+        save.assert_not_called()
+
+    def test_foreign_creator_hotaudio_identity_cannot_capture(self):
+        url='https://hotaudio.net/u/Other/public-track'
+        self.db.execute('CREATE TABLE identities(id INTEGER PRIMARY KEY,creator_id INTEGER,kind TEXT,handle TEXT,enabled INTEGER)')
+        self.db.execute("INSERT INTO creators VALUES(2,'Other',1,1)")
+        self.db.execute("INSERT INTO identities VALUES(1,2,'hotaudio','Other',1)")
+        self.db.execute("INSERT INTO settings VALUES('source.hotaudio.enabled','true')")
+        self.db.execute('UPDATE assets SET source=?,targets=? WHERE key=?',
+                        ('hotaudio:Other',json.dumps([['hotaudio',url]]),self.key))
+        with patch.object(s,'require_mount'),patch.object(s,'save_asset',side_effect=AssertionError('network reached')) as save:
+            with self.assertRaisesRegex(ValueError,'source_identity_not_approved'):
+                b.acquire(self.db,self.cfg,self.key)
+        save.assert_not_called()
+
+    def test_reddit_origin_hotaudio_target_cannot_capture(self):
+        url='https://hotaudio.net/u/Creator/public-track'
+        self.db.execute('UPDATE assets SET source=?,targets=? WHERE key=?',
+                        ('reddit:Creator',json.dumps([['hotaudio',url]]),self.key))
+        with patch.object(s,'require_mount'),patch.object(s,'save_asset',side_effect=AssertionError('network reached')) as save:
+            with self.assertRaisesRegex(ValueError,'source_target_not_approved'):
+                b.acquire(self.db,self.cfg,self.key)
+        save.assert_not_called()
+
+    def test_reddit_soundgasm_fallback_survives_hotaudio_filter(self):
+        url='https://hotaudio.net/u/Creator/public-track'
+        self.db.execute('UPDATE assets SET source=?,targets=? WHERE key=?',
+                        ('reddit:Creator',json.dumps([['hotaudio',url],['soundgasm',self.key]]),self.key))
+        def inspect(asset,effective,http):
+            self.assertEqual(json.loads(asset['targets']),[['soundgasm',self.key]])
+            self.assertEqual(effective['_authorized_creator_targets'],[])
+            raise ValueError('fixture_stop')
+        with patch.object(s,'require_mount'),patch.object(s,'save_asset',side_effect=inspect):
+            with self.assertRaisesRegex(ValueError,'fixture_stop'):
+                b.acquire(self.db,self.cfg,self.key)
     def test_shadow_cycle_release_identity_comes_from_runtime_manifest(self):
         identity=self.root/'deployed-release-runtime.json'
         identity.write_text(json.dumps({'sourceCommit':'a'*40,'artifactSha256':'b'*64}))
