@@ -147,6 +147,20 @@ and Plex indexing must still succeed. Remove only the operator-created temporary
 indexer and stop the fixture after verification; preserve downloaded media and
 the protected evidence.
 
+Before diagnosing a stalled audio torrent, inspect qBittorrent's effective
+excluded-file rules and the torrent's individual file priorities. Global audio
+exclusions affect every client sharing qBittorrent, including Lidarr. Correct
+erroneous shared rules at their source, preserving unrelated exclusions and the
+VPN binding; an ASMarr-only bypass does not repair the shared configuration.
+Existing torrents retain their prior file selections after the rules change.
+Select the intended audio files and resume the existing torrent, preserving its
+hash and queue identity. This retained selection is expected, not a failed repair.
+`AllFilesSkippedByQBit` records in Cleanuparr indicate the skipped-file outcome;
+they do not by themselves establish that Cleanuparr caused the exclusion.
+Verify transferred bytes, file integrity, native import and Plex indexing before
+claiming recovery. Review any affected Lidarr blocklist entries against recorded
+causes separately; changing exclusions does not restore removed downloads.
+
 Final scheduler enablement uses `ops/production_acceptance.py`. Its default is a
 read-only audit. Protected `production-acceptance.json` must name the current
 `testedCommit` and `artifactSha256`, distinct `directKey`/`fallbackKey`, their
