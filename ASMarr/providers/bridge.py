@@ -585,7 +585,7 @@ def profile(db,asset):
     return json.loads(r[0]) if r else {}
 
 
-def import_audio(db,cfg,key,path):
+def import_audio(db,cfg,key,path,*,provider='qbittorrent'):
     production(db);core.require_mount(cfg)
     asset=db.execute('SELECT * FROM assets WHERE key=?',(key,)).fetchone()
     if not asset:raise ValueError('recording_not_found')
@@ -619,10 +619,14 @@ def import_audio(db,cfg,key,path):
         if has_table(db,'media_assets'):
             video_media.ensure_asset_rows(db,key)
             db.execute("UPDATE media_assets SET state='imported',wanted=1,saved_path=?,acquired=?,error=NULL,retry_after=0 WHERE recording_key=? AND media_kind='Audio'",(str(destination),now,key))
-        db.execute('INSERT OR REPLACE INTO downloads VALUES(?,?,?,?,?,?,?)',('asset:'+hashlib.sha256(key.encode()).hexdigest(),'qbittorrent',asset['url'],asset['creator'],asset['title'],str(destination),now))
+        db.execute('INSERT OR REPLACE INTO downloads VALUES(?,?,?,?,?,?,?)',('asset:'+hashlib.sha256(key.encode()).hexdigest(),provider,asset['url'],asset['creator'],asset['title'],str(destination),now))
         core.meta_set(db,'plex_pending',True);core.meta_set(db,'plex_pending_paths',sorted(set(core.meta_get(db,'plex_pending_paths',[]))|{str(destination)}))
-    event(db,'import',key,{'provider':'qbittorrent','path':str(destination),'sha256':expected})
+    event(db,'import',key,{'provider':provider,'mediaKind':'Audio','path':str(destination),'sha256':expected})
     return {'status':'complete','path':str(destination),'sha256':expected}
+
+
+def import_derived_audio(db,cfg,key,path):
+    return import_audio(db,cfg,key,path,provider='video-master')
 
 
 def monitor_downloads(db,cfg):
@@ -647,7 +651,7 @@ def monitor_downloads(db,cfg):
                 cached=core.meta_get(db,'search_results:Video:'+job['recording_key'],[])
                 detail=json.loads(job['details'] or '{}')
                 selected=next((c for c in cached if c.get('guid')==detail.get('guid')),{'provider':'prowlarr','provider_id':job['download_id']})
-                result=video_media.import_video(db,cfg,job['recording_key'],str(candidates[0]),selected,import_audio)
+                result=video_media.import_video(db,cfg,job['recording_key'],str(candidates[0]),selected,import_derived_audio)
             else:result=import_audio(db,cfg,job['recording_key'],str(candidates[0]))
             with db:db.execute("UPDATE queue SET state='imported' WHERE id=?",(job['id'],))
             # Destination is durable and validated before any torrent removal.
@@ -730,13 +734,13 @@ def dispatch(operation,args):
         if operation=='acquire': return acquire(db,cfg,args['key'])
         if operation=='process-queue':return process_queue(db,cfg)
         if operation=='video-backfill':return video_media.backfill(db,cfg,secrets,args,core)
-        if operation=='video-process-queue':return video_media.process_queue(db,cfg,import_audio)
+        if operation=='video-process-queue':return video_media.process_queue(db,cfg,import_derived_audio)
         if operation=='search': return search(db,args['key'],args.get('mediaKind','Audio'))
         if operation=='grab':return grab(db,args['key'],args['candidate'],args.get('mediaKind','Audio'))
         if operation=='downloads':return monitor_downloads(db,cfg)
         if operation=='manual-import':
             if args.get('mediaKind','Audio')=='Video':
-                return video_media.import_video(db,cfg,args['key'],args['path'],args.get('candidate',{'provider':'manual'}),import_audio)
+                return video_media.import_video(db,cfg,args['key'],args['path'],args.get('candidate',{'provider':'manual'}),import_derived_audio)
             return import_audio(db,cfg,args['key'],args['path'])
         if operation=='rename-preview':
             rows=db.execute('SELECT * FROM assets WHERE key=?',(args['key'],)).fetchall() if args.get('key') else db.execute("SELECT * FROM assets WHERE state='complete'").fetchall()

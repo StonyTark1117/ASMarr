@@ -130,7 +130,16 @@ class VideoTests(unittest.TestCase):
 
     def test_single_video_master_can_derive_missing_audio(self):
         source = self.video_file(audio=True); calls = []
-        def importer(db, cfg, key, path): calls.append((key, Path(path).suffix)); return {'status':'imported'}
+        def importer(db, cfg, key, path):
+            import mutagen
+            tags = mutagen.File(path, easy=True)
+            self.assertEqual(tags['artist'], ['Creator'])
+            self.assertEqual(tags['albumartist'], ['Creator'])
+            self.assertEqual(tags['title'], ['A visual recording'])
+            self.assertEqual(tags['album'], ['Singles'])
+            self.assertEqual(tags['date'], ['2024-01-01'])
+            calls.append((key, Path(path).suffix))
+            return {'status':'imported'}
         result = v.import_video(self.db, self.cfg, 'recording', source,
                                 {'provider':'youtube','provider_id':'abcdefghijk'}, importer)
         self.assertTrue(result['hasAudio']); self.assertEqual(calls, [('recording','.m4a')])
@@ -159,6 +168,16 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(result['derivedAudio']['status'], 'failed')
         self.assertEqual(states, {'Audio':'failed', 'Video':'imported'})
         self.assertTrue(Path(result['path']).is_file())
+
+    def test_audio_tagging_failure_leaves_video_imported_and_audio_retryable(self):
+        source = self.video_file(audio=True); importer = Mock()
+        with patch.object(v.scraper, 'tag_audio', side_effect=ValueError('audio_tag_failed')):
+            result = v.import_video(self.db, self.cfg, 'recording', source,
+                                    {'provider':'youtube','provider_id':'abcdefghijk'}, importer)
+        importer.assert_not_called()
+        self.assertEqual(result['status'], 'imported')
+        self.assertEqual(result['derivedAudio'], {'status':'failed','error':'audio_tag_failed'})
+        self.assertEqual(self.db.execute("SELECT state FROM media_assets WHERE media_kind='Audio'").fetchone()[0], 'failed')
 
     def test_compatible_artwork_is_stored_with_matching_basename(self):
         source, artwork = self.video_file(), self.artwork_file()

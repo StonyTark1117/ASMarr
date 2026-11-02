@@ -59,6 +59,7 @@ class AcquisitionTests(unittest.TestCase):
         self.assertTrue(source.exists());self.assertEqual(self.db.execute('SELECT count(*) FROM downloads').fetchone()[0],1)
         self.assertEqual(s.meta_get(self.db,'plex_pending_paths'),[first['path']])
         self.assertEqual(self.db.execute('SELECT count(*) FROM history').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT source FROM downloads').fetchone()[0],'qbittorrent')
     def test_corrupt_completed_audio_stays_unimported(self):
         path=self.downloads/'corrupt.m4a';path.write_bytes(b'invalid-audio')
         with patch.object(s,'require_mount'),self.assertRaises(s.MediaError):b.import_audio(self.db,self.cfg,self.key,str(path))
@@ -73,6 +74,34 @@ class AcquisitionTests(unittest.TestCase):
         with patch.object(s,'require_mount'),self.assertRaises(ValueError):b.import_audio(self.db,self.cfg,self.key,str(path))
         symlink=self.downloads/'linked.m4a';symlink.symlink_to(path)
         with patch.object(s,'require_mount'),self.assertRaises(ValueError):b.import_audio(self.db,self.cfg,self.key,str(symlink))
+    def test_video_master_derivation_tags_audio_and_records_correct_provenance(self):
+        import mutagen
+        source=self.downloads/'master.mkv'
+        subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=black:s=160x120:d=1',
+                        '-f','lavfi','-i','sine=frequency=220:duration=1','-shortest',
+                        '-c:v','libx264','-c:a','libopus','-y',str(source)],check=True)
+        cfg=dict(self.cfg,video_root=str(self.root/'video'))
+        with patch.object(s,'require_mount'):
+            result=b.video_media.import_video(self.db,cfg,self.key,source,
+                     {'provider':'youtube','provider_id':'abcdefghijk','published':1735776000},b.import_derived_audio)
+        self.assertEqual(result['status'],'imported')
+        audio=Path(result['derivedAudio']['path']);tags=mutagen.File(str(audio),easy=True)
+        self.assertEqual(tags['artist'],['Creator'])
+        self.assertEqual(tags['albumartist'],['Creator'])
+        self.assertEqual(tags['title'],['Sleep hypnosis'])
+        self.assertEqual(tags['album'],['Singles'])
+        self.assertEqual(tags['date'],['2025-01-02'])
+        self.assertEqual(self.db.execute('SELECT source FROM downloads').fetchone()[0],'video-master')
+        event=json.loads(self.db.execute("SELECT details FROM history WHERE event='import'").fetchone()[0])
+        self.assertEqual((event['provider'],event['mediaKind']),('video-master','Audio'))
+        hashes=[]
+        for path in (source,audio):
+            p=subprocess.run(['ffmpeg','-nostdin','-v','error','-i',str(path),'-map','0:a:0',
+                              '-c','copy','-f','hash','-hash','sha256','-'],capture_output=True,text=True,check=True)
+            hashes.append(p.stdout)
+        self.assertEqual(hashes[0],hashes[1])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM queue').fetchone()[0],0)
+
     def test_direct_outage_retries_before_fallback(self):
         with patch.object(b,'acquire',side_effect=s.SourceError('http_503')),patch.object(b,'search') as search,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
             result=b.process_queue(self.db,self.cfg)

@@ -99,6 +99,7 @@ def verify(root, application, deployment, include_video=False, include_removal=F
         import test_video
         selected += tuple('test_video.VideoTests.' + name
                           for name in loader.getTestCaseNames(test_video.VideoTests))
+        selected += ('test_acquisition.AcquisitionTests.test_video_master_derivation_tags_audio_and_records_correct_provenance',)
     if include_removal:
         import test_creator_removal
         for cls in (test_creator_removal.CreatorRemovalTests,test_creator_removal.PlexRemovalTests):

@@ -552,6 +552,8 @@ def import_video(db, cfg, key, source, candidate, audio_importer=None, artwork=N
                 p = subprocess.run(['ffmpeg','-v','error','-i',str(source),'-vn','-c:a','copy','-y',str(extracted)], timeout=900)
                 if p.returncode == 0:
                     try:
+                        scraper.tag_audio(extracted, asset['creator'], asset['title'],
+                                          naming_asset['published'])
                         derived = audio_importer(db, cfg, key, str(extracted))
                     except Exception as exc:
                         # The validated video has already been atomically imported.
