@@ -162,6 +162,16 @@ test("creator monitoring, identity detail and mass editing", async ({
   await expect(
     page.getByLabel("Monitor Videos", { exact: true }),
   ).toBeChecked();
+  await expect
+    .poll(async () => {
+      const detail = await request.get(
+        "/api/v1/recordings/detail?key=fixture%3Abedtime",
+        { headers: { "X-Api-Key": auth().apiKey } },
+      );
+      const media = (await detail.json()).media;
+      return media.find((m: any) => m.media_kind === "Video")?.state;
+    })
+    .toBe("wanted");
   await page.getByRole("button", { name: "Videos", exact: true }).click();
   const videoTabs = page.locator(".tabs");
   await expect(
