@@ -380,6 +380,7 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(final['state'], 'completed')
         self.assertEqual([(c.args[2],c.kwargs['start']) for c in listing.call_args_list],
                          [(10002,10001),(10004,10003),(10004,10003)])
+        self.assertTrue(all(c.kwargs['all_uploads'] for c in listing.call_args_list))
         self.assertEqual(self.db.execute('SELECT count(*) FROM video_candidates').fetchone()[0], 3)
 
     def test_video_backfill_applies_creator_duration_topics_and_exclusions(self):

@@ -345,7 +345,7 @@ def backfill(db, cfg, secrets, args, core):
                 if not _video_monitoring_enabled(db, creator_id):
                     raise InterruptedError('video_monitoring_disabled')
                 entries = core.youtube.listing(channel, cfg, entry_start + page_size,
-                                               start=entry_start + 1)
+                                               start=entry_start + 1, all_uploads=True)
                 for entry in entries:
                     if not _video_monitoring_enabled(db, creator_id):
                         raise InterruptedError('video_monitoring_disabled')

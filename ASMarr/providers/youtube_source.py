@@ -40,16 +40,18 @@ def run_json(args, cfg, timeout=120):
         raise YouTubeError('youtube_invalid_json') from None
 
 
-def listing(channel, cfg, limit=None, *, start=1):
+def listing(channel, cfg, limit=None, *, start=1, all_uploads=False):
     cid = channel['channel_id']
     if not re.fullmatch(r'UC[\w-]{22}', cid):
         raise YouTubeError('youtube_invalid_channel_id')
     if type(start) is not int or start < 1:
         raise YouTubeError('youtube_invalid_listing_start')
+    url = ('https://www.youtube.com/playlist?list=UU' + cid[2:] if all_uploads else
+           'https://www.youtube.com/channel/' + cid + '/videos')
     data = run_json(['--flat-playlist', '--dump-single-json', '--skip-download',
                      '--playlist-start', str(start),
                      '--playlist-end', str(limit or cfg.get('youtube_poll_limit', 50)),
-                     'https://www.youtube.com/channel/' + cid + '/videos'], cfg)
+                     url], cfg)
     if data.get('channel_id') != cid or not isinstance(data.get('entries'), list):
         raise YouTubeError('youtube_channel_identity_mismatch')
     entries = data['entries']

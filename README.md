@@ -100,11 +100,15 @@ cross-source handle collisions.
 
 Video monitoring is opt-in per creator. Enabling it starts a resumable scan of
 known recordings, linked YouTube channels, configured Reddit feeds, and linked
-Reddit accounts' submitted history. YouTube history is paged without a total
-item cap; Reddit follows the continuation tokens exposed by its API. These scans
+Reddit accounts' submitted history. YouTube history uses the channel's uploads
+playlist rather than just its Videos tab, and is paged without a total item cap;
+Reddit follows the continuation tokens exposed by its API. These scans
 cover history available from the providers, not deleted posts or history their
 APIs no longer expose. Page checkpoints survive transient failures, and disabling
 video monitoring stops further discovery without deleting imported media.
+Each production discovery cycle also queues a deduplicated full-inventory scan
+for opted-in video creators, so future archived streams and other eligible
+uploads are found without changing the existing audio polling source.
 The existing Disk Scan also reconciles imported video paths: a unique matching
 content hash identifies a move or rename within the video root; missing files
 remain recorded as missing rather than being silently reacquired. Restored files
@@ -137,7 +141,11 @@ then restores the saved schedule. It does not opt in a creator or approve live
 video acquisition. The old audio acceptance remains historical evidence for its
 original release. On failure it restores the old application without rewriting
 media or the database; unexpected concurrent state changes leave scheduling held
-for review. Do not use the shadow-only deployment tool on production.
+for review. Before any video opt-in, a follow-up correction can use
+`--prior-upgrade-proof` with the protected report for the currently installed
+release. Its installed-runtime and Plex-preservation evidence must both verify;
+the historical audio acceptance is not relabeled for a new binary. Do not use
+the shadow-only deployment tool on production.
 
 The original implementation plan remains the acceptance scope. In particular:
 

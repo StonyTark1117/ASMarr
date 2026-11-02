@@ -109,6 +109,10 @@ class YouTubeTests(unittest.TestCase):
             args = run.call_args.args[0]
             self.assertEqual(args[args.index('--playlist-start')+1], '1')
             self.assertEqual(args[args.index('--playlist-end')+1], '50')
+            self.assertEqual(args[-1], 'https://www.youtube.com/channel/' + CHANNEL['channel_id'] + '/videos')
+            y.listing(CHANNEL, self.config(), 100, all_uploads=True)
+            self.assertEqual(run.call_args.args[0][-1],
+                             'https://www.youtube.com/playlist?list=UU' + CHANNEL['channel_id'][2:])
 
     def test_saved_file_is_audio_only_tagged_and_crash_recoverable(self):
         cfg = self.config()

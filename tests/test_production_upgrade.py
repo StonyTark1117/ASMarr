@@ -148,5 +148,23 @@ class ProductionUpgradeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'acceptance'):
             upgrade.validate_baseline(snapshot,self.old,dict(accepted,testedCommit='f'*40),'d'*64)
 
+    def test_revision_requires_matching_runtime_and_plex_evidence_not_a_ready_flag(self):
+        runtime = dict(testedCommit='a'*40,artifactSha256='d'*64,passed=True,
+                       artifactUnchanged=True,networkPolicy='connections blocked',
+                       tests=list(upgrade.TESTS)+['test_video.VideoTests.test_fixture'],
+                       testsRun=len(upgrade.TESTS)+1,fixtureManifest={'sourceCommit':'a'*40},
+                       errors=[],failures=[],skipped=[])
+        (self.acceptance/'runtime.json').write_text(json.dumps(runtime))
+        (self.acceptance/'plex.json').write_text(json.dumps({'passed':True,'changes':[]}))
+        prior = dict(self.old,ready=True,schedulerRestored=True,runtimeEvidence='runtime.json',plexPreservation='plex.json')
+        (self.acceptance/'prior.json').write_text(json.dumps(prior))
+        self.assertTrue(upgrade.prior_certification('prior.json',self.old)['ready'])
+        runtime['testedCommit'] = 'f'*40
+        (self.acceptance/'runtime.json').write_text(json.dumps(runtime))
+        with self.assertRaisesRegex(ValueError, 'does_not_certify'):
+            upgrade.prior_certification('prior.json',self.old)
+        with self.assertRaisesRegex(ValueError, 'outside_protected'):
+            upgrade.read_protected(self.root/'untrusted.json')
+
 
 if __name__ == '__main__': unittest.main()

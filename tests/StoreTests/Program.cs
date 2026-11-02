@@ -103,5 +103,9 @@ Assert(store.ResumeCancelledVideos(1)==1,"reenabling video monitoring restores p
 Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='new-audio' AND media_kind='Video' AND state='wanted' AND wanted=1 AND retry_after=0 AND error IS NULL").Count==1,"resumed video is immediately eligible for its own queue");
 Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='legacy-audio' AND media_kind='Video' AND state='imported'").Count==1,"reenabling videos preserves imported video state");
 Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='new-audio' AND media_kind='Audio' AND state='imported'").Count==1,"reenabling videos preserves independent audio state");
+store.Execute("UPDATE commands SET state='completed' WHERE name='video-backfill'");
+Assert(store.EnqueueMonitoredVideoBackfills()==2,"periodic discovery scans full upload inventories only for opted-in creators");
+Assert(store.EnqueueMonitoredVideoBackfills()==0,"periodic discovery does not duplicate queued full-history scans");
+Assert(store.Query("SELECT * FROM commands WHERE name='video-backfill' AND state='queued' AND CAST(json_extract(arguments,'$.creatorId') AS INTEGER)=2").Count==0,"periodic video discovery respects other creators' opt-outs");
 Console.WriteLine($"{assertions} store integration assertions passed");
 SqliteConnection.ClearAllPools();Directory.Delete(root,true);

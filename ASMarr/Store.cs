@@ -157,6 +157,20 @@ public sealed class Store
         }
         return queued;
     }
+    public int EnqueueMonitoredVideoBackfills()
+    {
+        int queued=0;
+        foreach(var creator in Query("""
+            SELECT c.id FROM creators c WHERE c.monitor_video=1
+              AND NOT EXISTS(SELECT 1 FROM commands q WHERE q.name='video-backfill'
+                             AND q.state IN ('queued','running')
+                             AND CAST(json_extract(q.arguments,'$.creatorId') AS INTEGER)=c.id)
+            """))
+        {
+            Enqueue("video-backfill",new {creatorId=Convert.ToInt32(creator["id"])});queued++;
+        }
+        return queued;
+    }
     public string Backup()
     {
         string path=System.IO.Path.Combine(Root,"backups",$"asmarr-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}.db");

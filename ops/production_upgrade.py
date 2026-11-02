@@ -20,7 +20,7 @@ import time
 import requests
 import urllib3
 from release_integrity import artifact_hash
-from runtime_fixtures import verify_fixture_files
+from runtime_fixtures import TESTS, verify_fixture_files
 from shadow_deploy import extract_payload, invariants
 
 DB = Path('/var/lib/asmarr/asmarr.db')
@@ -94,7 +94,37 @@ def evidence(command, *arguments):
     subprocess.run([sys.executable, str(OPS / command), *map(str, arguments)], check=True)
 
 
-def deploy(payload, fixtures, commit, ci_run, expected_hash):
+def read_protected(path):
+    path = Path(path)
+    if not path.is_absolute():
+        path = ACCEPTANCE / path
+    if path.is_symlink() or not path.resolve().is_relative_to(ACCEPTANCE.resolve()):
+        raise ValueError('upgrade_evidence_outside_protected_directory')
+    return json.loads(path.read_text())
+
+
+def prior_certification(path, release):
+    prior = read_protected(path)
+    runtime = read_protected(prior['runtimeEvidence'])
+    plex = read_protected(prior['plexPreservation'])
+    if (prior.get('ready') is not True or prior.get('schedulerRestored') is not True
+            or prior.get('sourceCommit') != release.get('sourceCommit')
+            or prior.get('artifactSha256') != release.get('artifactSha256')
+            or runtime.get('testedCommit') != release.get('sourceCommit')
+            or runtime.get('artifactSha256') != release.get('artifactSha256')
+            or runtime.get('passed') is not True or runtime.get('artifactUnchanged') is not True
+            or runtime.get('networkPolicy') != 'connections blocked'
+            or any(runtime.get(key) for key in ('errors','failures','skipped'))
+            or not set(TESTS).issubset(runtime.get('tests', []))
+            or runtime.get('testsRun') != len(runtime.get('tests', []))
+            or runtime.get('fixtureManifest', {}).get('sourceCommit') != release.get('sourceCommit')
+            or not any(name.startswith('test_video.VideoTests.') for name in runtime.get('tests', []))
+            or plex.get('passed') is not True or plex.get('changes') != []):
+        raise ValueError('prior_upgrade_does_not_certify_current_release')
+    return {'ready':True,'testedCommit':prior['sourceCommit'],'artifactSha256':prior['artifactSha256']}
+
+
+def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None):
     if not re.fullmatch('[a-f0-9]{40}', commit) or not re.fullmatch('[a-f0-9]{64}', expected_hash):
         raise ValueError('full_release_identity_required')
     ci = requests.get(f'https://api.github.com/repos/StonyTark1117/ASMarr/actions/runs/{ci_run}', timeout=30)
@@ -103,6 +133,8 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash):
         raise ValueError('exact_release_ci_not_successful')
     release = json.loads((ACCEPTANCE / 'deployed-release.json').read_text())
     accepted = json.loads((ACCEPTANCE / 'production-accepted.json').read_text())
+    if prior_upgrade:
+        accepted = prior_certification(prior_upgrade, release)
     before = invariants()
     validate_baseline(before, release, accepted, artifact_hash(APPLICATION))
     for action, unit, expected in (('is-enabled','asmr-scraper.timer','disabled'),
@@ -149,6 +181,8 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash):
         proposed.update(deployedAt=dt.datetime.now(dt.timezone.utc).isoformat(), mode='production',
                         ciRun=ci['html_url'], backup=str(backup), priorRelease=release['sourceCommit'],
                         acceptanceScope='upgrade pending; original audio acceptance is historical')
+        if prior_upgrade:
+            proposed['priorUpgradeEvidence'] = str(prior_upgrade)
         protected_json(ACCEPTANCE / 'deployed-release.json', proposed)
         protected_json(RUNTIME, {k: proposed[k] for k in ('sourceCommit','artifactSha256','deployedAt')}, 0o640)
         system('start'); healthy()
@@ -205,6 +239,7 @@ if __name__ == '__main__':
     parser.add_argument('--commit', required=True)
     parser.add_argument('--ci-run', type=int, required=True)
     parser.add_argument('--artifact-sha256', required=True)
+    parser.add_argument('--prior-upgrade-proof', type=Path)
     args = parser.parse_args()
-    result = deploy(args.payload, args.fixtures, args.commit, args.ci_run, args.artifact_sha256)
+    result = deploy(args.payload, args.fixtures, args.commit, args.ci_run, args.artifact_sha256, args.prior_upgrade_proof)
     print(json.dumps({k:result[k] for k in ('sourceCommit','artifactSha256','backup','scope','schedulerRestored')}))
