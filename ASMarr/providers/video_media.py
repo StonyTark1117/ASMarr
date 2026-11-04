@@ -36,7 +36,8 @@ class VideoUnavailable(ValueError):
 
 TERMINAL_DOWNLOAD_MARKERS = (
     'video unavailable', 'private video', 'has been removed',
-    'this video is not available', 'members-only', 'members only',
+    'this video is not available', 'this video is unavailable',
+    'members-only', 'members only',
     'age-restricted', 'age restricted', 'unsupported url',
 )
 

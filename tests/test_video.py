@@ -303,6 +303,10 @@ class VideoTests(unittest.TestCase):
         with patch.object(v.subprocess, 'run', return_value=failed):
             with self.assertRaisesRegex(v.VideoUnavailable, 'source_unavailable'):
                 v.download_video(self.db, self.cfg, 'recording', candidate)
+        unavailable = Mock(returncode=1, stdout='', stderr='ERROR: [youtube] id: This video is unavailable')
+        with patch.object(v.subprocess, 'run', return_value=unavailable):
+            with self.assertRaisesRegex(v.VideoUnavailable, 'source_unavailable'):
+                v.download_video(self.db, self.cfg, 'recording', candidate)
         source = self.video_file()
         self.cfg['youtube_min_duration_seconds'] = 2
         with self.assertRaisesRegex(v.VideoUnavailable, 'below_minimum_duration'):

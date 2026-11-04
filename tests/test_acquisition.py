@@ -211,9 +211,23 @@ class AcquisitionTests(unittest.TestCase):
             acquire.assert_not_called();grab.assert_called_once_with(self.db,self.key,candidate);self.assertEqual(len(result['fallback']),1)
     def test_ambiguous_fallback_requires_manual_search(self):
         self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0")
-        with patch.object(b,'search',return_value={'candidates':[{'autoGrab':False}]}),patch.object(b,'grab') as grab,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
-            b.process_queue(self.db,self.cfg);grab.assert_not_called()
+        with patch.object(b,'search',return_value={'candidates':[{'autoGrab':False}]}) as search,patch.object(b,'grab') as grab,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+            b.process_queue(self.db,self.cfg)
+            b.process_queue(self.db,self.cfg)
+            grab.assert_not_called()
+            search.assert_called_once()
         self.assertEqual(self.db.execute('SELECT event FROM history').fetchone()[0],'search-review')
+        self.assertGreater(self.db.execute('SELECT retry_after FROM assets').fetchone()[0],0)
+
+    def test_pending_direct_work_precedes_newer_failed_fallback(self):
+        self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0,published=200")
+        second='https://soundgasm.net/u/Creator/second'
+        s.enqueue(self.db,'sg:second','soundgasm:Creator','Creator','Second',[['soundgasm',second]],published=100)
+        with patch.object(b,'acquire',return_value={'status':'complete'}) as acquire,patch.object(b,'search') as search,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+            result=b.process_queue(self.db,self.cfg)
+        acquire.assert_called_once_with(self.db,self.cfg,second)
+        search.assert_not_called()
+        self.assertEqual(len(result['saved']),1)
     def test_fallback_timeout_backs_off_without_aborting_other_acquisitions(self):
         self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0,published=2")
         second='https://soundgasm.net/u/Creator/second'
