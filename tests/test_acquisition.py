@@ -219,15 +219,38 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT event FROM history').fetchone()[0],'search-review')
         self.assertGreater(self.db.execute('SELECT retry_after FROM assets').fetchone()[0],0)
 
-    def test_pending_direct_work_precedes_newer_failed_fallback(self):
+    def test_pending_direct_work_progresses_alongside_bounded_exhausted_fallback(self):
         self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0,published=200")
         second='https://soundgasm.net/u/Creator/second'
         s.enqueue(self.db,'sg:second','soundgasm:Creator','Creator','Second',[['soundgasm',second]],published=100)
-        with patch.object(b,'acquire',return_value={'status':'complete'}) as acquire,patch.object(b,'search') as search,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+        candidate={'guid':'fixture','indexerId':7,'autoGrab':True}
+        with patch.object(b,'acquire',return_value={'status':'complete'}) as acquire,patch.object(b,'search',return_value={'candidates':[candidate]}) as search,patch.object(b,'grab',return_value={'downloadId':'hash'}) as grab,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
             result=b.process_queue(self.db,self.cfg)
         acquire.assert_called_once_with(self.db,self.cfg,second)
-        search.assert_not_called()
+        search.assert_called_once_with(self.db,self.key,'Audio')
+        grab.assert_called_once_with(self.db,self.key,candidate)
         self.assertEqual(len(result['saved']),1)
+        self.assertEqual(len(result['fallback']),1)
+
+    def test_fallback_search_budget_is_bounded_and_respects_backoff(self):
+        self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0,published=300")
+        failed_second='https://www.youtube.com/watch?v=zyxwvutsrqp'
+        second='https://www.youtube.com/watch?v=abcdefghijk'
+        third='https://www.youtube.com/watch?v=lmnopqrstuv'
+        s.enqueue(self.db,'yt:failed-second','youtube:channel','Creator','Failed Second',[['youtube',failed_second]],published=250)
+        self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0 WHERE key=?",(failed_second,))
+        s.enqueue(self.db,'yt:second','youtube:channel','Creator','Second',[['youtube',second]],published=200)
+        s.enqueue(self.db,'yt:third','youtube:channel','Creator','Third',[['youtube',third]],published=100)
+        with patch.object(b,'acquire',return_value={'status':'complete'}) as acquire,patch.object(b,'search',return_value={'candidates':[{'autoGrab':False}]}) as search,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+            first=b.process_queue(self.db,dict(self.cfg,max_downloads_per_run=1,max_fallback_searches_per_run=1))
+            second_run=b.process_queue(self.db,dict(self.cfg,max_downloads_per_run=1,max_fallback_searches_per_run=1))
+        self.assertEqual(acquire.call_count,2)
+        self.assertEqual(search.call_count,2)
+        self.assertEqual(first['saved'],[{'status':'complete'}])
+        self.assertEqual(second_run['saved'],[{'status':'complete'}])
+        rows=self.db.execute("SELECT key,retry_after FROM assets WHERE state='failed' ORDER BY published DESC").fetchall()
+        self.assertEqual(len(rows),2)
+        self.assertTrue(all(row['retry_after']>0 for row in rows))
     def test_fallback_timeout_backs_off_without_aborting_other_acquisitions(self):
         self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0,published=2")
         second='https://soundgasm.net/u/Creator/second'

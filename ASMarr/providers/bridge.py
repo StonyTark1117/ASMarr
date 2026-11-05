@@ -727,29 +727,34 @@ def monitor_downloads(db,cfg):
 def process_queue(db,cfg):
     production(db);saved=[];failed=[];fallback=[]
     now=int(time.time())
-    rows=db.execute("SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE c.monitored=1 AND a.state IN ('pending','failed') AND a.retry_after<=? AND NOT EXISTS(SELECT 1 FROM queue q WHERE q.recording_key=a.key AND q.media_kind='Audio' AND q.state NOT IN ('failed','removed')) AND NOT EXISTS(SELECT 1 FROM blocklist b WHERE b.recording_key=a.key AND b.download_id IS NULL) ORDER BY CASE a.state WHEN 'pending' THEN 0 ELSE 1 END, COALESCE(a.published,0) DESC LIMIT ?",(now,cfg.get('max_downloads_per_run',25))).fetchall()
-    for row in rows:
-        rules=profile(db,row)
-        if not json.loads(row['targets'] or '[]') or row['attempts']>=rules.get('directRetries',3):
-            if rules.get('fallback',True):
-                try:
-                    found=search(db,row['key'],'Audio')
-                    candidate=next((c for c in found['candidates'] if c['autoGrab']),None)
-                    if candidate:fallback.append(grab(db,row['key'],candidate))
-                    else:
-                        review_after=now+86400
-                        with db:db.execute("UPDATE assets SET retry_after=? WHERE key=?",(review_after,row['key']))
-                        event(db,'search-review',row['key'],{'candidates':len(found['candidates']),'retryAfter':review_after})
-                except requests.RequestException as exc:
-                    # Indexer/client outages must not starve unrelated direct
-                    # acquisitions. Keep exhausted direct attempts and any
-                    # durable submitting job; never log credential-bearing URLs.
-                    reason='fallback_'+type(exc).__name__
-                    retry_after=now+3600
-                    with db:db.execute("UPDATE assets SET state='failed',retry_after=?,error=? WHERE key=?",(retry_after,reason,row['key']))
-                    event(db,'fallback-failure',row['key'],{'error':reason,'retryAfter':retry_after})
-                    failed.append({'key':row['key'],'error':reason})
-            continue
+    active="NOT EXISTS(SELECT 1 FROM queue q WHERE q.recording_key=a.key AND q.media_kind='Audio' AND q.state NOT IN ('failed','removed')) AND NOT EXISTS(SELECT 1 FROM blocklist b WHERE b.recording_key=a.key AND b.download_id IS NULL)"
+    eligible="c.monitored=1 AND a.state IN ('pending','failed') AND a.retry_after<=? AND "+active
+    # Direct work has its normal per-run capacity. Exhausted direct failures
+    # receive a separate, small search budget so a large pending catalog cannot
+    # starve fallback forever and a large failed catalog cannot crowd out new
+    # direct imports. Retry deadlines remain authoritative for both lanes.
+    direct_rows=db.execute("SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator LEFT JOIN profiles p ON p.id=c.profile_id WHERE "+eligible+" AND json_array_length(CASE WHEN json_valid(a.targets) THEN a.targets ELSE '[]' END)>0 AND a.attempts<COALESCE(CAST(json_extract(p.settings,'$.directRetries') AS INTEGER),3) ORDER BY CASE a.state WHEN 'pending' THEN 0 ELSE 1 END,COALESCE(a.published,0) DESC LIMIT ?",(now,cfg.get('max_downloads_per_run',25))).fetchall()
+    fallback_limit=max(0,int(cfg.get('max_fallback_searches_per_run',1)))
+    fallback_rows=db.execute("SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator LEFT JOIN profiles p ON p.id=c.profile_id WHERE "+eligible+" AND COALESCE(json_extract(p.settings,'$.fallback'),1)<>0 AND (json_array_length(CASE WHEN json_valid(a.targets) THEN a.targets ELSE '[]' END)=0 OR a.attempts>=COALESCE(CAST(json_extract(p.settings,'$.directRetries') AS INTEGER),3)) ORDER BY a.retry_after,COALESCE(a.published,0) DESC LIMIT ?",(now,fallback_limit)).fetchall() if fallback_limit else []
+    for row in fallback_rows:
+        try:
+            found=search(db,row['key'],'Audio')
+            candidate=next((c for c in found['candidates'] if c['autoGrab']),None)
+            if candidate:fallback.append(grab(db,row['key'],candidate))
+            else:
+                review_after=now+86400
+                with db:db.execute("UPDATE assets SET retry_after=? WHERE key=?",(review_after,row['key']))
+                event(db,'search-review',row['key'],{'candidates':len(found['candidates']),'retryAfter':review_after})
+        except requests.RequestException as exc:
+            # Indexer/client outages must not starve unrelated direct
+            # acquisitions. Keep exhausted direct attempts and any durable
+            # submitting job; never log credential-bearing URLs.
+            reason='fallback_'+type(exc).__name__
+            retry_after=now+3600
+            with db:db.execute("UPDATE assets SET state='failed',retry_after=?,error=? WHERE key=?",(retry_after,reason,row['key']))
+            event(db,'fallback-failure',row['key'],{'error':reason,'retryAfter':retry_after})
+            failed.append({'key':row['key'],'error':reason})
+    for row in direct_rows:
         try:saved.append(acquire(db,cfg,row['key']))
         except Exception as e:
             attempts=row['attempts']+1;reason=str(e) if isinstance(e,(core.SourceError,core.MediaError,ValueError)) else type(e).__name__
