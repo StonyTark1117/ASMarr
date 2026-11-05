@@ -43,11 +43,16 @@ class HTTP:
 
 class CreatorAudioSourceTests(unittest.TestCase):
     def test_whyp_listing_follows_cursor_and_deduplicates_pins(self):
-        first_track = {'public_id': 'ABC123', 'title': 'Owned', 'url': '/tracks/owned-ABC123'}
-        second_track = {'public_id': 'DEF456', 'title': 'Older', 'url': '/tracks/older-DEF456'}
+        first_track = {'public_id': 'ABC123', 'title': 'Owned', 'url': '/tracks/owned-ABC123',
+                       'allow_downloads': True}
+        second_track = {'public_id': 'DEF456', 'title': 'Older', 'url': '/tracks/older-DEF456',
+                        'allow_downloads': True}
+        disabled_track = {'public_id': 'GHI789', 'title': 'Not downloadable',
+                          'url': '/tracks/disabled-GHI789', 'allow_downloads': False}
         http = HTTP([Response(body={'pinned': [first_track], 'tracks': [first_track],
                                     'next_cursor': 'cursor'}),
-                     Response(body={'pinned': [], 'tracks': [second_track], 'next_cursor': None})])
+                     Response(body={'pinned': [], 'tracks': [second_track, disabled_track],
+                                    'next_cursor': None})])
         posts = sources.profile_listing(http, 'whyp', '@creator')
         self.assertEqual([(p['id'], p['title']) for p in posts],
                          [('ABC123', 'Owned'), ('DEF456', 'Older')])

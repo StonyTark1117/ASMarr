@@ -75,6 +75,11 @@ def profile_listing(http, kind, handle):
             for item in pinned + body['tracks']:
                 if not isinstance(item, dict):
                     continue
+                # A public track is not necessarily downloadable. Whyp grants
+                # this right per track, and a skipped track can be discovered
+                # later if its creator enables downloads.
+                if item.get('allow_downloads') is not True:
+                    continue
                 path, title, identity = item.get('url'), item.get('title'), item.get('public_id')
                 if not (isinstance(path, str) and re.fullmatch(r'/tracks/[^/]+-[A-Za-z0-9]+', path)
                         and isinstance(title, str) and isinstance(identity, str)):
