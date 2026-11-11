@@ -52,7 +52,15 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
                 if(command!=null) await ExecuteCommand(command,stoppingToken);
             }
             catch(OperationCanceledException) when(stoppingToken.IsCancellationRequested) { break; }
-            catch(Exception e) { logger.LogError(e,"Worker loop failed");store.Log("error","Worker loop failed: "+e.GetType().Name); }
+            catch(Exception e)
+            {
+                logger.LogError(e,"Worker loop failed");
+                // A busy database can cause the original failure and reject
+                // this diagnostic insert too. The journal already has the
+                // exception; keep the worker alive to retry on the next loop.
+                try { store.Log("error","Worker loop failed: "+e.GetType().Name); }
+                catch(Exception logError) { logger.LogWarning(logError,"Could not persist worker error log"); }
+            }
             await Task.Delay(TimeSpan.FromSeconds(2),stoppingToken);
         }
     }
