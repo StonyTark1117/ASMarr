@@ -139,6 +139,16 @@ class ProductionUpgradeTests(unittest.TestCase):
         self.service.assert_not_called()
         self.assertEqual(self.tasks(), original)
 
+    def test_queued_work_path_defers_expensive_baseline_until_maintenance_hold(self):
+        result = {'status':'queued-upgrade-dispatched'}
+        prior = self.root/'prior-upgrade.json'
+        with patch.object(upgrade, 'prior_certification', return_value=dict(self.old,ready=True)), \
+             patch.object(upgrade, 'invariants', side_effect=AssertionError('premature_full_scan')), \
+             patch.object(upgrade, 'deploy_preserving_queued', return_value=result) as deploy_held:
+            self.assertIs(upgrade.deploy(self.archive,self.root/'fixtures','b'*40,123,'c'*64,
+                                         prior,True,True,True), result)
+        deploy_held.assert_called_once()
+
     def test_active_work_prevents_holding_schedule(self):
         original = self.tasks()
         with sqlite3.connect(self.state) as db: db.execute("INSERT INTO commands VALUES('running')")

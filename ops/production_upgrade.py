@@ -533,8 +533,14 @@ def _deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None
         raise ValueError('existing_video_requires_exact_prior_upgrade_certification')
     if preserve_queued_work and (not preserve_existing_video or not prior_upgrade):
         raise ValueError('queued_work_requires_existing_video_and_prior_proof')
-    before = invariants()
-    validate_baseline(before, release, accepted, artifact_hash(APPLICATION), preserve_existing_video, preserve_queued_work)
+    # The queued-work path captures and validates its authoritative baseline
+    # after acquiring the provider lease and stopping the service.  Do not do
+    # a full video-content scan here while scheduling is still live: on large
+    # libraries that scan can take tens of minutes, allowing scheduled work to
+    # start and making the later safe-boundary gate fail after an avoidable scan.
+    if not preserve_queued_work:
+        before = invariants()
+        validate_baseline(before, release, accepted, artifact_hash(APPLICATION), preserve_existing_video, preserve_queued_work)
     for action, unit, expected in (('is-enabled','asmr-scraper.timer','disabled'),
                                    ('is-active','asmr-scraper.timer','inactive'),
                                    ('is-active','asmr-scraper.service','inactive')):
