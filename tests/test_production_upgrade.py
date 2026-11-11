@@ -1,6 +1,7 @@
 import io
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -236,6 +237,25 @@ class ExistingVideoPreservationTests(unittest.TestCase):
         self.assertNotEqual(before['videoFilesHash'],after['videoFilesHash'])
         (self.video/'artwork.jpg').write_bytes(b'artwork')
         self.assertNotEqual(after['videoInventoryHash'],upgrade.existing_video_state()['videoInventoryHash'])
+
+    def test_upgrade_digest_cache_rechecks_changed_files_and_final_bytes(self):
+        previous=upgrade._video_digest_cache
+        upgrade._video_digest_cache={}
+        self.addCleanup(setattr,upgrade,'_video_digest_cache',previous)
+        original_stat=self.file.stat()
+        file_digest=hashlib.file_digest
+        with patch.object(upgrade.hashlib,'file_digest',wraps=file_digest) as digest:
+            first=upgrade.existing_video_state()
+            self.assertEqual(first,upgrade.existing_video_state())
+            self.assertEqual(digest.call_count,1)
+            self.file.write_bytes(b'x'*original_stat.st_size)
+            os.utime(self.file,ns=(original_stat.st_atime_ns,original_stat.st_mtime_ns))
+            changed=upgrade.existing_video_state()
+            self.assertNotEqual(first['videoFilesHash'],changed['videoFilesHash'])
+            self.assertEqual(digest.call_count,2)
+            upgrade.clear_video_digest_cache()
+            self.assertEqual(changed,upgrade.existing_video_state())
+            self.assertEqual(digest.call_count,3)
 
     def test_missing_or_changed_verified_import_cannot_pass_upgrade_audit(self):
         sha=hashlib.sha256(self.file.read_bytes()).hexdigest()

@@ -38,6 +38,12 @@ OPS = Path(__file__).resolve().parent
 MAINTENANCE_DROPIN = Path('/run/systemd/system/asmarr.service.d/90-asmarr-upgrade-maintenance.conf')
 EMERGENCY_DROPINS = Path('/etc/systemd/system/asmarr.service.d')
 MAINTENANCE_CONTENT = '[Service]\nEnvironment=ASMARR_MAINTENANCE_HOLD=1\n'
+_video_digest_cache = None
+
+
+def clear_video_digest_cache():
+    if _video_digest_cache is not None:
+        _video_digest_cache.clear()
 
 
 def existing_video_state():
@@ -65,10 +71,17 @@ def existing_video_state():
                 if state == 'imported':raise ValueError('preserved_imported_video_missing')
                 media.append((str(path),'missing'));continue
             before = path.stat()
-            with path.open('rb') as stream:sha = hashlib.file_digest(stream,'sha256').hexdigest()
+            identity=(before.st_size,before.st_mtime_ns,before.st_ctime_ns,before.st_ino)
+            cached=_video_digest_cache.get(str(path)) if _video_digest_cache is not None else None
+            if cached is not None and cached[0]==identity:
+                sha=cached[1]
+            else:
+                with path.open('rb') as stream:sha = hashlib.file_digest(stream,'sha256').hexdigest()
             after = path.stat()
-            if (before.st_size,before.st_mtime_ns,before.st_ino)!=(after.st_size,after.st_mtime_ns,after.st_ino):
+            if identity!=(after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_ino):
                 raise ValueError('preserved_video_changed_during_audit')
+            if _video_digest_cache is not None:
+                _video_digest_cache[str(path)]=(identity,sha)
             expected = json.loads(details or '{}').get('asmarr_file',{}).get('sha256')
             if expected and expected != sha:raise ValueError('preserved_video_digest_mismatch')
             media.append((str(path),before.st_size,before.st_mtime_ns,before.st_ino,sha))
@@ -445,6 +458,9 @@ def deploy_preserving_queued(stage, fixtures, proposed, ci, release, accepted, p
         for unit,original in units.items():
             current=subprocess.run(['systemctl','cat',unit],check=True,capture_output=True).stdout
             if current!=original:raise ValueError('service_configuration_changed')
+        # Re-read every byte at the final commit point. Earlier intermediate
+        # checks reuse digests only while size, mtime, ctime and inode match.
+        clear_video_digest_cache()
         if invariants()!=before or artifact_hash(APPLICATION)!=proposed['artifactSha256']:
             raise ValueError('final_preservation_failed')
         report=dict(proposed,ready=False,heldValidationPassed=True,resumeVerified=False,
@@ -502,7 +518,7 @@ def deploy_preserving_queued(stage, fixtures, proposed, ci, release, accepted, p
         raise
 
 
-def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None, preserve_existing_video=False, include_removal_tests=False, preserve_queued_work=False):
+def _deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None, preserve_existing_video=False, include_removal_tests=False, preserve_queued_work=False):
     if not re.fullmatch('[a-f0-9]{40}', commit) or not re.fullmatch('[a-f0-9]{64}', expected_hash):
         raise ValueError('full_release_identity_required')
     ci = requests.get(f'https://api.github.com/repos/StonyTark1117/ASMarr/actions/runs/{ci_run}', timeout=30)
@@ -590,6 +606,7 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None,
         if invariants() != held:
             raise ValueError('instance_changed_before_scheduler_restore')
         restore_tasks(tasks)
+        clear_video_digest_cache()
         if invariants() != before:
             raise ValueError('saved_scheduler_or_state_not_restored')
         report = dict(proposed, ready=True, scope='production upgrade; live video acceptance still required',
@@ -620,6 +637,19 @@ def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None,
         if stopped:
             system('start')
         raise
+
+
+def deploy(payload, fixtures, commit, ci_run, expected_hash, prior_upgrade=None, preserve_existing_video=False, include_removal_tests=False, preserve_queued_work=False):
+    global _video_digest_cache
+    if _video_digest_cache is not None:
+        raise RuntimeError('production_upgrade_already_running')
+    _video_digest_cache={}
+    try:
+        return _deploy(payload, fixtures, commit, ci_run, expected_hash,
+                       prior_upgrade, preserve_existing_video,
+                       include_removal_tests, preserve_queued_work)
+    finally:
+        _video_digest_cache=None
 
 
 if __name__ == '__main__':
