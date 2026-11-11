@@ -227,6 +227,31 @@ class VideoTests(unittest.TestCase):
             result = v.process_queue(self.db, self.cfg)
         self.assertEqual(result['concurrency'], 1); self.assertEqual(download.call_count, 1)
 
+    def test_video_queue_round_robins_creators_before_repeating_a_prolific_creator(self):
+        self.db.execute("INSERT INTO creators VALUES(2,'Other Creator',1,1,1,1)")
+        self.db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)
+                         VALUES('creator-second','https://youtu.be/secondvideo1','[]','youtube','Creator','Newer video',1704067300,'pending'),
+                               ('other-first','https://youtu.be/othervideo01','[]','youtube','Other Creator','Older video',1704067100,'pending')""")
+        urls = {'recording': 'https://youtu.be/abcdefghijk',
+                'creator-second': 'https://youtu.be/secondvideo1',
+                'other-first': 'https://youtu.be/othervideo01'}
+        for key, url in urls.items():
+            self.db.execute("INSERT INTO media_assets(recording_key,media_kind,wanted,state) VALUES(?,'Video',1,'wanted')", (key,))
+            v.add_candidate(self.db, key, 'youtube', url)
+        self.cfg['video_concurrency'] = 2
+        selected = []
+
+        def transfer(_db, _cfg, row, _candidate, _audio_importer):
+            selected.append(row['creator'])
+            return {'key': row['recording_key'], 'status': 'complete'}
+
+        with patch.object(v, '_process_transfer', side_effect=transfer):
+            result = v.process_queue(self.db, self.cfg)
+
+        self.assertEqual(result['concurrency'], 2)
+        self.assertEqual(selected, ['Creator', 'Other Creator'])
+        self.assertEqual(self.db.execute("SELECT value FROM meta WHERE key='video_queue_last_creator'").fetchone()[0], '"Other Creator"')
+
     def test_free_space_is_rechecked_before_each_transfer(self):
         self.cfg.update(video_concurrency=2, video_free_space_gib=20)
         self.db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)

@@ -594,6 +594,39 @@ def _meta_set(db, key, value):
     db.execute('INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)', (key, json.dumps(value)))
 
 
+def _fair_creator_batch(db, rows, limit, cursor_key):
+    """Round-robin eligible video rows across creators without reordering a creator's work."""
+    if limit <= 0 or not rows:
+        return []
+    groups = {}
+    for row in rows:
+        groups.setdefault(row['creator'], []).append(row)
+    creators = sorted(groups, key=str.casefold)
+    last = _meta_get(db, cursor_key)
+    if last:
+        after = [name for name in creators if name.casefold() > str(last).casefold()]
+        before = [name for name in creators if name.casefold() <= str(last).casefold()]
+        creators = after + before
+    positions = {name: 0 for name in creators}
+    selected = []
+    while len(selected) < limit:
+        added = False
+        for creator in creators:
+            position = positions[creator]
+            if position >= len(groups[creator]):
+                continue
+            selected.append(groups[creator][position])
+            positions[creator] = position + 1
+            added = True
+            if len(selected) >= limit:
+                break
+        if not added:
+            break
+    if selected:
+        _meta_set(db, cursor_key, selected[-1]['creator'])
+    return selected
+
+
 def scan_library(db, cfg):
     """Reconcile externally changed paths without moving or deleting any media."""
     rows = db.execute("""SELECT m.* FROM media_assets m WHERE m.media_kind='Video'
@@ -779,7 +812,8 @@ def process_queue(db, cfg, audio_importer=None):
         FROM media_assets m JOIN assets a ON a.key=m.recording_key JOIN creators c ON c.name=a.creator
         WHERE m.media_kind='Video' AND m.wanted=1 AND c.monitor_video=1
           AND m.state IN ('wanted','failed') AND m.retry_after<=?
-        ORDER BY COALESCE(a.published,0) DESC LIMIT ?""", (int(time.time()), concurrency)).fetchall()
+        ORDER BY COALESCE(a.published,0) DESC""", (int(time.time()),)).fetchall()
+    rows = _fair_creator_batch(db, rows, concurrency, 'video_queue_last_creator')
     results = []
     prepared = []
     paused_free = None
