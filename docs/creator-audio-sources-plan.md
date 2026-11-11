@@ -16,6 +16,8 @@ The [gallery-dl Audiochan extractor](https://github.com/mikf/gallery-dl/blob/mas
 
 On 2026-11-11, CT130's Audiochan connector was disabled. No Audiochan identity was linked, so this change did not remove any existing monitored source.
 
+The CT130 upgrade to commit `7d30faa` completed with preserved video and queued work, 122 passing runtime fixtures, an unchanged Plex comparison, and a healthy restarted service. Lurkydip's Whyp identity is linked. The installed adapter listed seven download-enabled tracks, but the current production eligibility rules rejected all seven for `missing_topic`. The Whyp connector is temporarily disabled pending an explicit decision about importing outside that creator's hypnosis profile; a queued Whyp-only discovery command was cancelled before it ran.
+
 ## ASMarr integration sequence
 
 1. Verify creator identities and current download rights at the time of acquisition. Keep Whyp posts with disabled downloads out of the acquisition queue. Do not link Audiochan identities for scheduled acquisition or transfer browser clearance cookies while its terms prohibit automated access. For Audiochan support, obtain platform authorization for an integration or use creator-supplied files with permission to save them. A previous scratch success is not production proof.
