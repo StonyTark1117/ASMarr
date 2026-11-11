@@ -227,6 +227,28 @@ class VideoTests(unittest.TestCase):
             result = v.process_queue(self.db, self.cfg)
         self.assertEqual(result['concurrency'], 1); self.assertEqual(download.call_count, 1)
 
+    def test_video_queue_rotates_creators_instead_of_retrying_one_catalog(self):
+        v.add_candidate(self.db, 'recording', 'youtube', 'https://youtu.be/abcdefghijk')
+        self.db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)
+                         VALUES('same-creator','https://youtu.be/samecreator1','[]','youtube','Creator','Another',0,'pending')""")
+        self.db.execute("INSERT INTO aliases VALUES('same-creator','same-creator')")
+        self.db.execute("INSERT INTO media_assets(recording_key,media_kind,wanted,state) VALUES('same-creator','Audio',1,'wanted')")
+        self.db.execute("INSERT INTO creators VALUES(2,'Other creator',1,1,1,1)")
+        self.db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)
+                         VALUES('other-creator','https://youtu.be/othercreator1','[]','youtube','Other creator','Other',0,'pending')""")
+        self.db.execute("INSERT INTO aliases VALUES('other-creator','other-creator')")
+        self.db.execute("INSERT INTO media_assets(recording_key,media_kind,wanted,state) VALUES('other-creator','Audio',1,'wanted')")
+        v.add_candidate(self.db, 'same-creator', 'youtube', 'https://youtu.be/samecreator1')
+        v.add_candidate(self.db, 'other-creator', 'youtube', 'https://youtu.be/othercreator1')
+        self.db.commit()
+        with patch.object(v, 'download_video', side_effect=ValueError('video_metadata_failed')):
+            first = v.process_queue(self.db, self.cfg)
+            self.db.execute("UPDATE media_assets SET retry_after=0 WHERE media_kind='Video'")
+            self.db.commit()
+            second = v.process_queue(self.db, self.cfg)
+        self.assertEqual(first['jobs'][0]['key'], 'recording')
+        self.assertEqual(second['jobs'][0]['key'], 'other-creator')
+
     def test_free_space_is_rechecked_before_each_transfer(self):
         self.cfg.update(video_concurrency=2, video_free_space_gib=20)
         self.db.execute("""INSERT INTO assets(key,url,targets,source,creator,title,published,state)

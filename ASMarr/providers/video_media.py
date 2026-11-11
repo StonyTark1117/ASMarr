@@ -776,10 +776,36 @@ def process_queue(db, cfg, audio_importer=None):
         return {'status': 'paused_low_space', 'available': free, 'required': minimum, 'jobs': []}
     concurrency = max(1, min(4, int(cfg.get('video_concurrency', 1))))
     rows = db.execute("""SELECT m.*,a.creator,a.title,a.published,c.video_quality_profile_id
+        ,c.id AS creator_id
         FROM media_assets m JOIN assets a ON a.key=m.recording_key JOIN creators c ON c.name=a.creator
         WHERE m.media_kind='Video' AND m.wanted=1 AND c.monitor_video=1
           AND m.state IN ('wanted','failed') AND m.retry_after<=?
-        ORDER BY COALESCE(a.published,0) DESC LIMIT ?""", (int(time.time()), concurrency)).fetchall()
+        ORDER BY COALESCE(a.published,0) DESC,c.id,a.key""", (int(time.time()),)).fetchall()
+    # A global newest-first LIMIT lets one creator's backlog monopolize every
+    # video-queue cycle (especially when dates are missing and all sort as 0).
+    # Rotate the starting creator across cycles and take one item per creator
+    # before filling any remaining concurrency slots.
+    by_creator = {}
+    for row in rows:
+        by_creator.setdefault(int(row['creator_id']), []).append(row)
+    creator_ids = sorted(by_creator)
+    last_creator = _meta_get(db, 'video_queue_last_creator')
+    if last_creator is not None and int(last_creator) in creator_ids:
+        start = (creator_ids.index(int(last_creator)) + 1) % len(creator_ids)
+        creator_ids = creator_ids[start:] + creator_ids[:start]
+    selected = []
+    depth = 0
+    while len(selected) < concurrency and any(depth < len(by_creator[cid]) for cid in creator_ids):
+        for creator_id in creator_ids:
+            if depth < len(by_creator[creator_id]):
+                selected.append(by_creator[creator_id][depth])
+                if len(selected) >= concurrency:
+                    break
+        depth += 1
+    rows = selected
+    if rows:
+        with db:
+            _meta_set(db, 'video_queue_last_creator', int(rows[-1]['creator_id']))
     results = []
     prepared = []
     paused_free = None
