@@ -52,7 +52,15 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
                 if(command!=null) await ExecuteCommand(command,stoppingToken);
             }
             catch(OperationCanceledException) when(stoppingToken.IsCancellationRequested) { break; }
-            catch(Exception e) { logger.LogError(e,"Worker loop failed");store.Log("error","Worker loop failed: "+e.GetType().Name); }
+            catch(Exception e)
+            {
+                // The database may be the reason this iteration failed. Never
+                // let a secondary failure while persisting the diagnostic take
+                // down the hosted service (the logger above is independent).
+                logger.LogError(e,"Worker loop failed");
+                try { store.Log("error","Worker loop failed: "+e.GetType().Name); }
+                catch(Exception logError) { logger.LogError(logError,"Could not persist worker-loop failure to the database"); }
+            }
             await Task.Delay(TimeSpan.FromSeconds(2),stoppingToken);
         }
     }
@@ -64,7 +72,28 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
         var now=DateTimeOffset.UtcNow;
         if(!store.TryAcquireLease("providers",owner,TimeSpan.FromMinutes(2)))return;
         using var leaseCancel=CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var lease=Task.Run(async()=> { while(!leaseCancel.IsCancellationRequested) { await Task.Delay(30000,leaseCancel.Token); if(!store.RenewLease("providers",owner,TimeSpan.FromMinutes(2))){leaseCancel.Cancel();return;} } },leaseCancel.Token);
+        var lease=Task.Run(async()=>
+        {
+            while(!leaseCancel.IsCancellationRequested)
+            {
+                await Task.Delay(30000,leaseCancel.Token);
+                try
+                {
+                    if(!store.RenewLease("providers",owner,TimeSpan.FromMinutes(2)))
+                    {
+                        logger.LogWarning("Provider lease was lost; cancelling command {Name}",name);
+                        leaseCancel.Cancel();return;
+                    }
+                }
+                catch(Exception e)
+                {
+                    // A renewal failure must stop the provider work, but must
+                    // not escape this helper task and terminate the whole host.
+                    logger.LogError(e,"Provider lease renewal failed; cancelling command {Name}",name);
+                    leaseCancel.Cancel();return;
+                }
+            }
+        },leaseCancel.Token);
         if(store.Execute("UPDATE commands SET state='running',started=$now WHERE id=$id AND state='queued'",("id",id),("now",now.ToString("O")))!=1)
         {
             store.ReleaseLease("providers",owner);leaseCancel.Cancel();try{await lease;}catch(OperationCanceledException){}return;

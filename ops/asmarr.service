@@ -15,7 +15,7 @@ Environment=ASPNETCORE_ENVIRONMENT=Production
 Environment=ASPNETCORE_Kestrel__Certificates__Default__Path=/etc/asmarr/tls.pem
 Environment=ASPNETCORE_Kestrel__Certificates__Default__KeyPath=/etc/asmarr/tls.key
 Environment=DOTNET_EnableDiagnostics=0
-Restart=on-failure
+Restart=always
 RestartSec=5
 StateDirectory=asmarr
 StateDirectoryMode=0700
