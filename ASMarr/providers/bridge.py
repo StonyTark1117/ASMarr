@@ -724,10 +724,44 @@ def monitor_downloads(db,cfg):
     return {'status':'ok','jobs':results}
 
 
+def _fair_creator_batch(db, rows, limit, cursor_key):
+    """Select work round-robin by creator while preserving each creator's row order."""
+    if limit <= 0 or not rows:
+        return []
+    groups={}
+    for row in rows:
+        groups.setdefault(row['creator'],[]).append(row)
+    creators=sorted(groups,key=str.casefold)
+    last=core.meta_get(db,cursor_key)
+    if last:
+        after=[name for name in creators if name.casefold()>str(last).casefold()]
+        before=[name for name in creators if name.casefold()<=str(last).casefold()]
+        creators=after+before
+    positions={name:0 for name in creators}
+    selected=[]
+    while len(selected)<limit:
+        added=False
+        for creator in creators:
+            position=positions[creator]
+            if position>=len(groups[creator]):
+                continue
+            selected.append(groups[creator][position])
+            positions[creator]=position+1
+            added=True
+            if len(selected)>=limit:
+                break
+        if not added:
+            break
+    if selected:
+        core.meta_set(db,cursor_key,selected[-1]['creator'])
+    return selected
+
+
 def process_queue(db,cfg):
     production(db);saved=[];failed=[];fallback=[]
     now=int(time.time())
-    rows=db.execute("SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE c.monitored=1 AND a.state IN ('pending','failed') AND a.retry_after<=? AND NOT EXISTS(SELECT 1 FROM queue q WHERE q.recording_key=a.key AND q.media_kind='Audio' AND q.state NOT IN ('failed','removed')) AND NOT EXISTS(SELECT 1 FROM blocklist b WHERE b.recording_key=a.key AND b.download_id IS NULL) ORDER BY CASE a.state WHEN 'pending' THEN 0 ELSE 1 END, COALESCE(a.published,0) DESC LIMIT ?",(now,cfg.get('max_downloads_per_run',25))).fetchall()
+    rows=db.execute("SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE c.monitored=1 AND a.state IN ('pending','failed') AND a.retry_after<=? AND NOT EXISTS(SELECT 1 FROM queue q WHERE q.recording_key=a.key AND q.media_kind='Audio' AND q.state NOT IN ('failed','removed')) AND NOT EXISTS(SELECT 1 FROM blocklist b WHERE b.recording_key=a.key AND b.download_id IS NULL) ORDER BY CASE a.state WHEN 'pending' THEN 0 ELSE 1 END, COALESCE(a.published,0) DESC",(now,)).fetchall()
+    rows=_fair_creator_batch(db,rows,cfg.get('max_downloads_per_run',25),'audio_queue_last_creator')
     for row in rows:
         rules=profile(db,row)
         if not json.loads(row['targets'] or '[]') or row['attempts']>=rules.get('directRetries',3):

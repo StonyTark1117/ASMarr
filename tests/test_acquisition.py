@@ -190,6 +190,42 @@ class AcquisitionTests(unittest.TestCase):
         row=self.db.execute('SELECT attempts,retry_after,state FROM assets').fetchone()
         self.assertEqual(row['attempts'],1);self.assertEqual(row['state'],'failed');self.assertGreater(row['retry_after'],0)
 
+    def test_audio_queue_rotates_creators_before_repeating_a_prolific_creator(self):
+        extras=[('Other A','https://soundgasm.net/u/OtherA/one',900),
+                ('Other B','https://soundgasm.net/u/OtherB/one',800),
+                ('Creator','https://soundgasm.net/u/Creator/second',700)]
+        for index,(creator,key,published) in enumerate(extras,2):
+            if creator!='Creator':
+                self.db.execute('INSERT INTO creators VALUES(?,?,1,1)',(index,creator))
+                self.db.execute('INSERT INTO profiles VALUES(?,?)',(index,json.dumps({'minimumDuration':0,'directRetries':2,'fallback':True})))
+            s.enqueue(self.db,'fixture:'+str(index),'soundgasm:'+creator,creator,'Sleep '+str(index),[['soundgasm',key]],published=published)
+        self.db.execute('UPDATE assets SET published=1000 WHERE key=?',(self.key,))
+        calls=[]
+        def acquire(_db,_cfg,key):
+            calls.append(key)
+            _db.execute('UPDATE assets SET state=\'complete\' WHERE key=?',(key,))
+            _db.commit()
+            return {'status':'complete'}
+        with patch.object(b,'acquire',side_effect=acquire),patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+            for _ in range(4):b.process_queue(self.db,dict(self.cfg,max_downloads_per_run=1))
+        self.assertEqual(calls,[self.key,extras[0][1],extras[1][1],extras[2][1]])
+
+    def test_audio_fallback_search_rotates_creators_before_repeating(self):
+        extra='https://soundgasm.net/u/Creator/second'
+        self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0,published=1000")
+        s.enqueue(self.db,'sg:second','soundgasm:Creator','Creator','Second',[['soundgasm',extra]],published=900)
+        self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0 WHERE key=?",(extra,))
+        for index,creator,key,published in [(2,'Other A','https://soundgasm.net/u/OtherA/one',800),
+                                            (3,'Other B','https://soundgasm.net/u/OtherB/one',700)]:
+            self.db.execute('INSERT INTO creators VALUES(?,?,1,1)',(index,creator))
+            self.db.execute('INSERT INTO profiles VALUES(?,?)',(index,json.dumps({'minimumDuration':0,'directRetries':2,'fallback':True})))
+            s.enqueue(self.db,'fixture:'+str(index),'soundgasm:'+creator,creator,'Sleep '+str(index),[['soundgasm',key]],published=published)
+            self.db.execute("UPDATE assets SET state='failed',attempts=2,retry_after=0 WHERE key=?",(key,))
+        searched=[]
+        with patch.object(b,'search',side_effect=lambda _db,key,*_args:(searched.append(key) or {'candidates':[]})),patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
+            for _ in range(4):b.process_queue(self.db,dict(self.cfg,max_downloads_per_run=1))
+        self.assertEqual(searched,[self.key,'https://soundgasm.net/u/OtherA/one','https://soundgasm.net/u/OtherB/one',extra])
+
     def test_active_video_job_does_not_block_audio_acquisition(self):
         self.db.execute("INSERT INTO queue VALUES('video',?,'video-hash','downloading','qbittorrent','{}','date','Video')",(self.key,))
         with patch.object(b,'acquire',return_value={'status':'complete'}) as acquire,patch.object(b,'monitor_downloads',return_value={'status':'idle'}):
