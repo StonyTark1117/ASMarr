@@ -151,6 +151,11 @@ public sealed class Store
         Execute("INSERT INTO commands(id,name,arguments,state,created) VALUES($id,$name,$args,'queued',$at)",("id",id),("name",name),("args",JsonSerializer.Serialize(arguments)),("at",DateTimeOffset.UtcNow.ToString("O")));
         return id;
     }
+    public Dictionary<string,object?>? NextQueuedCommand() => Query("""
+        SELECT * FROM commands WHERE state='queued'
+        ORDER BY CASE WHEN name IN ('queue','video-queue') THEN 0 ELSE 1 END,created
+        LIMIT 1
+        """).FirstOrDefault();
     public void InterruptRunningVideoBackfills()
     {
         var now=DateTimeOffset.UtcNow.ToString("O");
@@ -191,6 +196,8 @@ public sealed class Store
               AND NOT EXISTS(SELECT 1 FROM commands q WHERE q.name='video-backfill'
                              AND q.state IN ('queued','running')
                              AND CAST(json_extract(q.arguments,'$.creatorId') AS INTEGER)=c.id)
+              AND NOT EXISTS(SELECT 1 FROM backfill_jobs b WHERE b.creator_id=c.id
+                             AND b.media_kind='Video' AND b.state='completed')
             """))
         {
             Enqueue("video-backfill",new {creatorId=Convert.ToInt32(creator["id"])});queued++;

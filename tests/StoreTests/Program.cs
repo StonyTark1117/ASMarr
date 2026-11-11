@@ -53,6 +53,12 @@ var reopened=new Store();
 Assert(reopened.Query("SELECT state FROM commands WHERE id=$id",("id",id))[0]["state"]!.ToString()=="queued","commands persist across connection lifetime");
 string backup=store.Backup();
 using(var db=new SqliteConnection("Data Source="+backup)){db.Open();using var c=db.CreateCommand();c.CommandText="SELECT count(*) FROM commands";Assert(Convert.ToInt32(c.ExecuteScalar())==1,"SQLite online backup retains durable commands");}
+var olderBackfill=store.Enqueue("video-backfill",new {creatorId=1});
+var pendingVideoQueue=store.Enqueue("video-queue",new {trigger="scheduler"});
+Assert(store.NextQueuedCommand()?["id"]?.ToString()==pendingVideoQueue,"video acquisition runs ahead of older full-history scans");
+store.Execute("UPDATE commands SET state='completed' WHERE id=$id",("id",pendingVideoQueue));
+Assert(store.NextQueuedCommand()?["id"]?.ToString()==id,"non-acquisition work retains FIFO order behind acquisition");
+store.Execute("UPDATE commands SET state='completed' WHERE id=$id",("id",olderBackfill));
 Console.WriteLine($"{assertions} store integration assertions passed");
 store.Execute("INSERT INTO profiles VALUES(1,'Default','{}');INSERT INTO profiles VALUES(2,'Sleep','{}')");
 store.Execute("INSERT INTO creators(id,name,path,tags) VALUES(1,'First','/fixture/first','[\"Existing\"]'),(2,'Second','/fixture/second','[]')");
@@ -110,9 +116,10 @@ Assert(store.ResumeCancelledVideos(1)==1,"reenabling video monitoring restores p
 Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='new-audio' AND media_kind='Video' AND state='wanted' AND wanted=1 AND retry_after=0 AND error IS NULL").Count==1,"resumed video is immediately eligible for its own queue");
 Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='legacy-audio' AND media_kind='Video' AND state='imported'").Count==1,"reenabling videos preserves imported video state");
 Assert(store.Query("SELECT * FROM media_assets WHERE recording_key='new-audio' AND media_kind='Audio' AND state='imported'").Count==1,"reenabling videos preserves independent audio state");
-store.Execute("UPDATE commands SET state='completed' WHERE name='video-backfill'");
-Assert(store.EnqueueMonitoredVideoBackfills()==2,"periodic discovery scans full upload inventories only for opted-in creators");
+store.Execute("UPDATE commands SET state='completed' WHERE name='video-backfill';INSERT INTO backfill_jobs(id,creator_id,media_kind,state,started,updated) VALUES('completed-first',1,'Video','completed',$now,$now)",("now",DateTimeOffset.UtcNow.ToString("O")));
+Assert(store.EnqueueMonitoredVideoBackfills()==1,"periodic discovery scans opted-in creators that have not completed their initial history scan");
 Assert(store.EnqueueMonitoredVideoBackfills()==0,"periodic discovery does not duplicate queued full-history scans");
+Assert(store.EnqueueMonitoredVideoBackfills()==0,"completed full-history scans are not requeued on every discovery cycle");
 Assert(store.Query("SELECT * FROM commands WHERE name='video-backfill' AND state='queued' AND CAST(json_extract(arguments,'$.creatorId') AS INTEGER)=2").Count==0,"periodic video discovery respects other creators' opt-outs");
 store.Execute("INSERT INTO creator_exclusions(name,aliases,identities,removed) VALUES('Excluded Reader','[\"Old Alias\"]','[{\"kind\":\"reddit\",\"handle\":\"OldHandle\"}]',1)");
 Assert(CreatorRegistration.Create(store,new NewCreator("excluded reader",1)).Error is not null,"excluded creator cannot be recreated case-insensitively");

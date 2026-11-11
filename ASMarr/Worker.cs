@@ -48,7 +48,10 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
                         store.Enqueue(name,new {trigger="scheduler",scheduledTask=name,scheduledFor=t["next_run"]});
                     store.Execute("UPDATE tasks SET next_run=$next WHERE name=$name",("name",name),("next",DateTimeOffset.UtcNow.AddSeconds(Convert.ToInt32(t["interval_seconds"])).ToString("O")));
                 }
-                var command=store.Query("SELECT * FROM commands WHERE state='queued' ORDER BY created LIMIT 1").FirstOrDefault();
+                // Keep acquisition flowing while long creator history scans
+                // are queued; otherwise a daily batch of full-history jobs can
+                // sit ahead of video-queue for hours in FIFO order.
+                var command=store.NextQueuedCommand();
                 if(command!=null) await ExecuteCommand(command,stoppingToken);
             }
             catch(OperationCanceledException) when(stoppingToken.IsCancellationRequested) { break; }
