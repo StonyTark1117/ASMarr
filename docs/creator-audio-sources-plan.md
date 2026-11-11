@@ -14,6 +14,8 @@ All three sources have prototype monitoring and acquisition adapters. Each produ
 
 The [gallery-dl Audiochan extractor](https://github.com/mikf/gallery-dl/blob/master/gallery_dl/extractor/audiochan.py) reads `audioFile.url` or `audioFile.stream_url` from public metadata. On 2026-11-11, those fields were unset or absent for all 110 published, public, unlocked posts listed under the verified Lurkydip and SmutGrrl profiles (6 and 104 posts respectively). That extractor does not currently establish a direct-download fallback for these posts.
 
+On 2026-11-11, CT130's Audiochan connector was disabled. No Audiochan identity was linked, so this change did not remove any existing monitored source.
+
 ## ASMarr integration sequence
 
 1. Verify creator identities and current download rights at the time of acquisition. Keep Whyp posts with disabled downloads out of the acquisition queue. Do not link Audiochan identities for scheduled acquisition or transfer browser clearance cookies while its terms prohibit automated access. For Audiochan support, obtain platform authorization for an integration or use creator-supplied files with permission to save them. A previous scratch success is not production proof.
