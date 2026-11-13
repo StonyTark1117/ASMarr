@@ -24,6 +24,9 @@ builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("youtube
 builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("whyp",sp.GetRequiredService<ProviderProcess>()));
 builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("audiochan",sp.GetRequiredService<ProviderProcess>()));
 builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("hotaudio",sp.GetRequiredService<ProviderProcess>()));
+builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("rss",sp.GetRequiredService<ProviderProcess>()));
+builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("internet_archive",sp.GetRequiredService<ProviderProcess>()));
+builder.Services.AddSingleton<ISourceConnector>(sp=>new SourceConnector("bandcamp",sp.GetRequiredService<ProviderProcess>()));
 builder.Services.AddSignalR();builder.Services.AddOpenApi();builder.Services.AddHostedService<Worker>();
 builder.Services.AddSingleton<SessionSecurity>();builder.Services.AddHostedService(sp=>sp.GetRequiredService<SessionSecurity>());
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(System.IO.Path.Combine(store.ConfigRoot,"keys"))).SetApplicationName("ASMarr");
@@ -119,7 +122,7 @@ api.MapPost("/auth/password",async(PasswordChange p)=> {
 });
 api.MapGet("/system/status",()=>new {version=typeof(Store).Assembly.GetName().Version?.ToString(3)??"unknown",runtime=System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,mode=store.Setting("mode"),root=store.Setting("root"),videoRoot=store.Setting("video.root"),counts=store.Query("SELECT state,count(*) AS count FROM assets a WHERE EXISTS(SELECT 1 FROM creators c WHERE c.name=a.creator) GROUP BY state"),mediaCounts=store.Query("SELECT media_kind,state,count(*) AS count FROM media_assets m WHERE EXISTS(SELECT 1 FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=m.recording_key) GROUP BY media_kind,state"),creators=store.Query("SELECT count(*) AS count FROM creators"),sources=store.Query("SELECT count(*) AS count FROM sources"),shadowCycles=store.Query("SELECT id,started,finished,clean FROM shadow_cycles ORDER BY id DESC"),qualifiedShadowDays=ShadowQualification.Count(store),disk=Disk(store.Setting("root")),videoDisk=Disk(store.Setting("video.root")),scheduler="internal",maintenanceHeld=Environment.GetEnvironmentVariable("ASMARR_MAINTENANCE_HOLD")=="1",recoveryHeld=store.Setting("recovery.hold")=="true"});
 api.MapGet("/creators",()=>CreatorLibrary.Read(store));
-api.MapGet("/creators/{id:int}",(int id)=>new {creator=store.Query("SELECT * FROM creators WHERE id=$id",("id",id)).FirstOrDefault(),identities=store.Query("SELECT * FROM identities WHERE creator_id=$id",("id",id)),recordings=store.Query("SELECT a.*,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Audio') AS audio_state,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Video') AS video_state FROM assets a WHERE creator=(SELECT name FROM creators WHERE id=$id) ORDER BY acquired DESC",("id",id)),backfill=store.Query("SELECT * FROM backfill_jobs WHERE creator_id=$id AND media_kind='Video' ORDER BY started DESC LIMIT 1",("id",id)).FirstOrDefault()});
+api.MapGet("/creators/{id:int}",(int id)=>new {creator=store.Query("SELECT * FROM creators WHERE id=$id",("id",id)).FirstOrDefault(),identities=store.Query("SELECT * FROM identities WHERE creator_id=$id",("id",id)),recordings=store.Query("SELECT a.*,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Audio') AS audio_state,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Video') AS video_state FROM assets a WHERE creator=(SELECT name FROM creators WHERE id=$id) ORDER BY acquired DESC",("id",id)),backfill=store.Query("SELECT * FROM backfill_jobs WHERE creator_id=$id ORDER BY started DESC LIMIT 1",("id",id)).FirstOrDefault(),suggestions=store.Query("SELECT * FROM source_suggestions WHERE creator_id=$id AND state='pending' ORDER BY score DESC",("id",id)),previews=store.Query("SELECT * FROM source_previews WHERE creator_id=$id ORDER BY created DESC LIMIT 10",("id",id))});
 api.MapGet("/creators/{id:int}/removal-preview",async(int id,ProviderProcess provider,CancellationToken ct)=> {
     var preview=await provider.Run("creator-removal-preview",new{creatorId=id},ct);
     return preview.TryGetProperty("error",out _)?Results.NotFound(preview):Results.Ok(preview);
@@ -135,8 +138,9 @@ api.MapPut("/creators/{id:int}",async(int id,CreatorEdit c,IHubContext<StatusHub
     var existing=store.Query("SELECT * FROM creators WHERE id=$id",("id",id)).FirstOrDefault();if(existing==null)return Results.NotFound();
     bool wasVideo=Convert.ToInt32(existing["monitor_video"])==1,monitorVideo=c.MonitorVideo??wasVideo;
     int videoProfile=c.VideoQualityProfileId??Convert.ToInt32(existing["video_quality_profile_id"]);
+    string followMode=c.FollowMode??existing["follow_mode"]!.ToString()!;if(followMode is not ("explicit" or "discovered"))return Results.BadRequest(new{error="Unknown follow mode"});
     if(store.Query("SELECT id FROM video_quality_profiles WHERE id=$id",("id",videoProfile)).Count==0)return Results.BadRequest(new{error="Unknown video quality profile"});
-    store.Execute("UPDATE creators SET monitored=$monitored,profile_id=$profile,tags=$tags,monitor_video=$video,video_quality_profile_id=$videoProfile WHERE id=$id",("id",id),("monitored",c.Monitored?1:0),("profile",c.ProfileId),("tags",JsonSerializer.Serialize(c.Tags)),("video",monitorVideo?1:0),("videoProfile",videoProfile));
+    store.Execute("UPDATE creators SET monitored=$monitored,profile_id=$profile,tags=$tags,monitor_video=$video,video_quality_profile_id=$videoProfile,follow_mode=$follow,follow_mode_review=CASE WHEN $reviewed=1 THEN 0 ELSE follow_mode_review END WHERE id=$id",("id",id),("monitored",c.Monitored?1:0),("profile",c.ProfileId),("tags",JsonSerializer.Serialize(c.Tags)),("video",monitorVideo?1:0),("videoProfile",videoProfile),("follow",followMode),("reviewed",c.FollowMode is null?0:1));
     string? commandId=null;
     if(!wasVideo&&monitorVideo){store.ResumeCancelledVideos(id);commandId=store.Enqueue("video-backfill",new{creatorId=id});}
     if(wasVideo&&!monitorVideo){var cancelled=store.Query("SELECT recording_key FROM media_assets WHERE media_kind='Video' AND state IN ('wanted','queued','failed','missing') AND recording_key IN (SELECT key FROM assets WHERE creator=(SELECT name FROM creators WHERE id=$id))",("id",id));var cancelledAt=DateTimeOffset.UtcNow.ToString("O");store.Execute("UPDATE media_assets SET wanted=0,state='cancelled' WHERE media_kind='Video' AND state IN ('wanted','queued','failed','missing') AND recording_key IN (SELECT key FROM assets WHERE creator=(SELECT name FROM creators WHERE id=$id))",("id",id));store.Execute("UPDATE backfill_jobs SET state='cancelled',updated=$now,finished=$now WHERE creator_id=$id AND media_kind='Video' AND state IN ('queued','running','failed','interrupted')",("id",id),("now",cancelledAt));store.Execute("UPDATE commands SET state='cancelled',finished=$now,error='Video monitoring disabled before history scan' WHERE name='video-backfill' AND state='queued' AND CAST(json_extract(arguments,'$.creatorId') AS INTEGER)=$id",("id",id),("now",cancelledAt));foreach(var row in cancelled)await hub.Clients.All.SendAsync("assetState",new{mediaKind="Video",recordingKey=row["recording_key"]?.ToString(),state="cancelled"},ct);}
@@ -149,6 +153,24 @@ api.MapPost("/identities",(IdentityEdit i)=> {
     return result.Error is null?Results.Created(urlBase+"/api/v1/identities/"+result.Id,new{id=result.Id}):Results.BadRequest(new{error=result.Error});
 });
 api.MapPut("/identities/{id:int}",(int id,JsonElement j)=>{store.Execute("UPDATE identities SET enabled=$enabled WHERE id=$id",("id",id),("enabled",j.GetProperty("enabled").GetBoolean()?1:0));return Results.Ok();});
+api.MapGet("/creators/{id:int}/source-catalog",(int id)=>store.Query("SELECT sc.*,i.kind,i.handle AS identity FROM source_catalog sc JOIN identities i ON i.id=sc.identity_id WHERE i.creator_id=$id ORDER BY sc.published DESC,sc.title COLLATE NOCASE",("id",id)));
+api.MapPost("/creators/{id:int}/source-preview",(int id,SourcePreviewRequest request)=> {
+    if(request.IdentityId is null&&request.Kind is not ("rss" or "internet_archive" or "bandcamp"))return Results.BadRequest(new{error="Unsupported public source"});
+    return Results.Accepted(value:new{id=store.Enqueue("source-preview",new{creatorId=id,kind=request.Kind,identity=request.Identity,identityId=request.IdentityId})});
+});
+api.MapPost("/source-previews/{id}/backfill",(string id,AudioBackfillRequest request)=>Results.Accepted(value:new{id=store.Enqueue("audio-backfill",new{previewId=id,providerIds=request.ProviderIds??[],allEligible=request.AllEligible})}));
+api.MapPost("/creators/{id:int}/eligibility-repair-preview",(int id)=>Results.Accepted(value:new{id=store.Enqueue("eligibility-repair-preview",new{creatorId=id})}));
+api.MapPost("/source-previews/{id}/eligibility-repair",(string id,RepairApplyRequest request)=>Results.Accepted(value:new{id=store.Enqueue("eligibility-repair-apply",new{previewId=id,recordingKeys=request.RecordingKeys??[],allEligible=request.AllEligible})}));
+api.MapGet("/source-suggestions",(int? creatorId)=>store.Query("SELECT * FROM source_suggestions WHERE ($id IS NULL OR creator_id=$id) ORDER BY state,score DESC",("id",creatorId)));
+api.MapPut("/source-suggestions/{id}",(string id,SuggestionEdit edit)=> {
+    var suggestion=store.Query("SELECT * FROM source_suggestions WHERE id=$id",("id",id)).FirstOrDefault();if(suggestion is null)return Results.NotFound();
+    if(edit.Action=="dismiss"){store.Execute("UPDATE source_suggestions SET state='dismissed',updated=$now WHERE id=$id",("id",id),("now",DateTimeOffset.UtcNow.ToString("O")));return Results.Ok();}
+    if(edit.Action!="approve")return Results.BadRequest(new{error="Use approve or dismiss"});
+    int creatorId=Convert.ToInt32(suggestion["creator_id"]);string kind=suggestion["kind"]!.ToString()!,identity=suggestion["identity"]!.ToString()!;
+    var linked=CreatorRegistration.Link(store,creatorId,new(kind,identity,true));if(linked.Error is not null)return Results.BadRequest(new{error=linked.Error});
+    store.Execute("UPDATE source_suggestions SET state='approved',updated=$now WHERE id=$id",("id",id),("now",DateTimeOffset.UtcNow.ToString("O")));
+    return Results.Accepted(value:new{id=store.Enqueue("source-preview",new{creatorId,kind,identity,identityId=linked.Id}),identityId=linked.Id});
+});
 api.MapGet("/recordings",(string? creator,string? state,string? q,int? limit,int? offset)=>store.Query("SELECT a.*,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Audio') AS audio_state,(SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Video') AS video_state FROM assets a WHERE EXISTS(SELECT 1 FROM creators c WHERE c.name=a.creator) AND ($creator IS NULL OR creator=$creator) AND ($state IS NULL OR state=$state OR EXISTS(SELECT 1 FROM media_assets m WHERE m.recording_key=a.key AND m.state=$state)) AND ($q IS NULL OR title LIKE '%'||$q||'%' OR creator LIKE '%'||$q||'%') ORDER BY COALESCE(published,acquired,0) DESC LIMIT $limit OFFSET $offset",("creator",creator),("state",state),("q",q),("limit",Math.Clamp(limit??200,1,1000)),("offset",Math.Max(0,offset??0))));
 api.MapGet("/recordings/detail",(string key)=>new {recording=store.Query("SELECT * FROM assets WHERE key=$key",("key",key)).FirstOrDefault(),media=store.Query("SELECT * FROM media_assets WHERE recording_key=$key ORDER BY media_kind",("key",key)),candidates=store.Query("SELECT id,provider,provider_id,resolution,source_quality,bitrate,video_codec,audio_codec,container,interactive_only FROM video_candidates WHERE recording_key=$key ORDER BY resolution DESC",("key",key)),aliases=store.Query("SELECT * FROM aliases WHERE asset_key=$key",("key",key)),history=store.Query("SELECT * FROM history WHERE recording_key=$key ORDER BY id DESC",("key",key))});
 api.MapPost("/recordings/action",async(RecordingAction a,IHubContext<StatusHub> hub,CancellationToken ct)=> {
@@ -170,8 +192,17 @@ api.MapPost("/video/interactive-search",(VideoInteractiveSearch search)=> {
     return Results.Accepted(value:new{id=store.Enqueue("search",new{key=search.Key,mediaKind="Video"})});
 });
 api.MapGet("/calendar",()=>store.Query("SELECT key,title,creator,published,state FROM assets a WHERE EXISTS(SELECT 1 FROM creators c WHERE c.name=a.creator) AND published>0 ORDER BY published DESC"));
-api.MapGet("/connectors",()=>new {sources=store.Query("SELECT * FROM sources ORDER BY name"),configuration=new[]{"reddit","soundgasm","youtube","sfw","whyp","audiochan","hotaudio"}.Select(k=>new{kind=k,enabled=store.Setting("source."+k+".enabled",k=="hotaudio"?"false":"true")=="true"})});
-api.MapPut("/connectors/{kind}",(string kind,JsonElement j)=>{if(kind is not ("reddit" or "soundgasm" or "youtube" or "sfw" or "whyp" or "audiochan" or "hotaudio"))return Results.BadRequest();store.Set("source."+kind+".enabled",j.GetProperty("enabled").GetBoolean()?"true":"false");return Results.Ok();});
+string[] sourceKinds=["reddit","soundgasm","youtube","sfw","whyp","audiochan","hotaudio","rss","internet_archive","bandcamp"];
+api.MapGet("/connectors",()=>new {
+    sources=store.Query("SELECT * FROM sources ORDER BY name"),
+    configuration=sourceKinds.Select(k=>new {
+        kind=k,
+        enabled=store.Setting("source."+k+".enabled",k is "hotaudio" or "rss" or "internet_archive" or "bandcamp"?"false":"true")=="true",
+        identityInput=k switch {"rss"=>"Public feed URL","internet_archive"=>"Archive item URL/identifier, or collection URL with ?creator=","bandcamp"=>"Bandcamp artist, album, or track URL",_=>"Account or channel ID"},
+        capabilities=new {catalogPreview=k is "rss" or "internet_archive" or "bandcamp",downloadTest=k is "rss" or "internet_archive" or "bandcamp",testStages=new[]{"discovery","download"}}
+    })
+});
+api.MapPut("/connectors/{kind}",(string kind,JsonElement j)=>{if(!sourceKinds.Contains(kind))return Results.BadRequest();store.Set("source."+kind+".enabled",j.GetProperty("enabled").GetBoolean()?"true":"false");return Results.Ok();});
 api.MapGet("/connectors/{kind}/configuration",async(string kind,ProviderProcess provider,CancellationToken ct)=> {
     var result=await provider.Run("source-configuration",new{kind},ct);
     return result.TryGetProperty("error",out _)?Results.BadRequest(result):Results.Ok(result);
@@ -241,7 +272,7 @@ api.MapPut("/tasks/{name}",(string name,TaskEdit t)=>{store.Execute("UPDATE task
 api.MapGet("/commands",()=>store.Query("SELECT * FROM commands ORDER BY created DESC LIMIT 100"));
 api.MapGet("/commands/{id}",(string id)=>store.Query("SELECT * FROM commands WHERE id=$id",("id",id)).FirstOrDefault());
 api.MapPost("/commands",(CommandInput c)=> {
-    if(!new[]{"migration","discovery","queue","video-queue","video-backfill","disk-scan","plex","plex-verify","plex-video","plex-video-verify","playlists","playlists-verify","health","backup","source-test","search","grab","manual-import","rename-preview","integration-test"}.Contains(c.Name))return Results.BadRequest(new{error="Unknown command"});
+    if(!new[]{"migration","discovery","source-suggest","source-preview","eligibility-repair-preview","eligibility-repair-apply","audio-backfill","queue","video-queue","video-backfill","disk-scan","plex","plex-verify","plex-video","plex-video-verify","playlists","playlists-verify","health","backup","source-test","search","grab","manual-import","rename-preview","integration-test"}.Contains(c.Name))return Results.BadRequest(new{error="Unknown command"});
     if(store.Setting("mode")!="production"&&new[]{"grab","manual-import","video-queue","plex-video"}.Contains(c.Name))return Results.Conflict(new{error="Acquisition is disabled until audited cutover"});
     return Results.Accepted(value:new {id=store.Enqueue(c.Name,c.Arguments)});
 });
@@ -276,8 +307,12 @@ static string? ValidateProfile(JsonElement settings)
 static object IntegrationStatus(Store s) {var p=System.IO.Path.Combine(s.ConfigRoot,"integrations.json");if(!File.Exists(p))return new Dictionary<string,object>();using var d=JsonDocument.Parse(File.ReadAllText(p));return d.RootElement.EnumerateObject().ToDictionary(x=>x.Name,x=>(object)new{configured=true,url=x.Value.TryGetProperty("url",out var u)?u.GetString():null});}
 record Login(string Username,string Password);
 record PasswordChange(string CurrentPassword,string Password);
-record CreatorEdit(bool Monitored,int ProfileId,string[] Tags,bool? MonitorVideo,int? VideoQualityProfileId);
+record CreatorEdit(bool Monitored,int ProfileId,string[] Tags,bool? MonitorVideo,int? VideoQualityProfileId,string? FollowMode=null);
 record IdentityEdit(int CreatorId,string Kind,string Handle,bool Enabled);
+record SourcePreviewRequest(string? Kind,string? Identity,int? IdentityId);
+record AudioBackfillRequest(string[]? ProviderIds,bool AllEligible);
+record RepairApplyRequest(string[]? RecordingKeys,bool AllEligible);
+record SuggestionEdit(string Action);
 record ProfileEdit(string Name,JsonElement Settings);
 record VideoProfileEdit(string Name,string Resolution,JsonElement Settings);
 record VideoPlexBinding(int? SectionId);

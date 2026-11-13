@@ -31,7 +31,7 @@ public sealed class Store
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);
         CREATE TABLE IF NOT EXISTS sources(name TEXT PRIMARY KEY,status TEXT,last_attempt INTEGER,last_success INTEGER,last_download INTEGER,details TEXT);
         CREATE TABLE IF NOT EXISTS runs(started INTEGER PRIMARY KEY,finished INTEGER,status TEXT,details TEXT);
-        CREATE TABLE IF NOT EXISTS creators(id INTEGER PRIMARY KEY,name TEXT UNIQUE NOT NULL,aliases TEXT NOT NULL DEFAULT '[]',path TEXT NOT NULL,tags TEXT NOT NULL DEFAULT '[]',monitored INTEGER NOT NULL DEFAULT 1,profile_id INTEGER NOT NULL DEFAULT 1,monitor_video INTEGER NOT NULL DEFAULT 0,video_quality_profile_id INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS creators(id INTEGER PRIMARY KEY,name TEXT UNIQUE NOT NULL,aliases TEXT NOT NULL DEFAULT '[]',path TEXT NOT NULL,tags TEXT NOT NULL DEFAULT '[]',monitored INTEGER NOT NULL DEFAULT 1,profile_id INTEGER NOT NULL DEFAULT 1,monitor_video INTEGER NOT NULL DEFAULT 0,video_quality_profile_id INTEGER NOT NULL DEFAULT 1,follow_mode TEXT NOT NULL DEFAULT 'explicit',follow_mode_review INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS identities(id INTEGER PRIMARY KEY,creator_id INTEGER REFERENCES creators(id),kind TEXT NOT NULL,handle TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,UNIQUE(creator_id,kind,handle));
         CREATE TABLE IF NOT EXISTS profiles(id INTEGER PRIMARY KEY,name TEXT NOT NULL,settings TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS video_quality_profiles(id INTEGER PRIMARY KEY,name TEXT UNIQUE NOT NULL,resolution TEXT NOT NULL,settings TEXT NOT NULL,is_builtin INTEGER NOT NULL DEFAULT 0);
@@ -59,15 +59,29 @@ public sealed class Store
         CREATE TABLE IF NOT EXISTS shadow_cycles(id INTEGER PRIMARY KEY,started TEXT NOT NULL,finished TEXT,result TEXT NOT NULL,clean INTEGER NOT NULL DEFAULT 0,comparison TEXT NOT NULL DEFAULT '{}');
         CREATE TABLE IF NOT EXISTS migration_audits(id INTEGER PRIMARY KEY,at TEXT NOT NULL,result TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS creator_exclusions(name TEXT PRIMARY KEY COLLATE NOCASE,aliases TEXT NOT NULL DEFAULT '[]',identities TEXT NOT NULL DEFAULT '[]',removed INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS source_catalog(id TEXT PRIMARY KEY,identity_id INTEGER NOT NULL REFERENCES identities(id) ON DELETE CASCADE,provider_id TEXT NOT NULL,title TEXT NOT NULL,published INTEGER NOT NULL DEFAULT 0,duration REAL,eligible INTEGER NOT NULL DEFAULT 0,eligibility_reason TEXT NOT NULL,metadata TEXT NOT NULL DEFAULT '{}',recording_key TEXT REFERENCES assets(key),discovered TEXT NOT NULL,updated TEXT NOT NULL,UNIQUE(identity_id,provider_id));
+        CREATE TABLE IF NOT EXISTS source_previews(id TEXT PRIMARY KEY,identity_id INTEGER REFERENCES identities(id) ON DELETE CASCADE,creator_id INTEGER NOT NULL REFERENCES creators(id) ON DELETE CASCADE,kind TEXT NOT NULL,identity TEXT NOT NULL,state TEXT NOT NULL,complete INTEGER NOT NULL DEFAULT 0,discovered INTEGER NOT NULL DEFAULT 0,eligible INTEGER NOT NULL DEFAULT 0,result TEXT NOT NULL DEFAULT '{}',created TEXT NOT NULL,expires TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS source_suggestions(id TEXT PRIMARY KEY,creator_id INTEGER NOT NULL REFERENCES creators(id) ON DELETE CASCADE,kind TEXT NOT NULL,identity TEXT NOT NULL,title TEXT,evidence TEXT NOT NULL DEFAULT '{}',score REAL NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',created TEXT NOT NULL,updated TEXT NOT NULL,UNIQUE(creator_id,kind,identity));
         CREATE INDEX IF NOT EXISTS assets_state ON assets(state,retry_after);
         CREATE INDEX IF NOT EXISTS assets_creator ON assets(creator);
         CREATE INDEX IF NOT EXISTS media_assets_state ON media_assets(media_kind,state,retry_after);
         CREATE INDEX IF NOT EXISTS video_candidates_recording ON video_candidates(recording_key);
+        CREATE INDEX IF NOT EXISTS source_catalog_identity ON source_catalog(identity_id,published DESC);
+        CREATE INDEX IF NOT EXISTS source_suggestions_creator ON source_suggestions(creator_id,state,score DESC);
         INSERT OR IGNORE INTO schema_migrations VALUES(1,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
         """; c.ExecuteNonQuery();
         AddColumn(db,"creators","monitor_video","INTEGER NOT NULL DEFAULT 0");
         AddColumn(db,"creators","video_quality_profile_id","INTEGER NOT NULL DEFAULT 1");
         AddColumn(db,"queue","media_kind","TEXT NOT NULL DEFAULT 'Audio'");
+        AddColumn(db,"creators","follow_mode","TEXT NOT NULL DEFAULT 'explicit'");
+        AddColumn(db,"creators","follow_mode_review","INTEGER NOT NULL DEFAULT 0");
+        AddColumn(db,"backfill_jobs","identity_id","INTEGER REFERENCES identities(id)");
+        AddColumn(db,"backfill_jobs","preview_id","TEXT");
+        AddColumn(db,"backfill_jobs","selected","INTEGER NOT NULL DEFAULT 0");
+        AddColumn(db,"backfill_jobs","selection","TEXT NOT NULL DEFAULT '[]'");
+        AddColumn(db,"backfill_jobs","downloaded","INTEGER NOT NULL DEFAULT 0");
+        AddColumn(db,"backfill_jobs","imported","INTEGER NOT NULL DEFAULT 0");
+        AddColumn(db,"backfill_jobs","plex_indexed","INTEGER NOT NULL DEFAULT 0");
         // Existing deployments become audio assets only. The video opt-in remains
         // false, so applying this migration can never initiate video work.
         using(var migrate=db.CreateCommand())
@@ -84,13 +98,25 @@ public sealed class Store
             """;
             migrate.ExecuteNonQuery();
         }
+        using(var publicSources=db.CreateCommand())
+        {
+            publicSources.CommandText="""
+            UPDATE creators SET follow_mode_review=1
+              WHERE NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=3);
+            UPDATE creators SET follow_mode='discovered',follow_mode_review=0
+              WHERE name IN (SELECT json_extract(json_each.value,'$.creator') FROM meta,json_each(meta.value)
+                             WHERE meta.key='sfw_auto_creators' AND json_valid(meta.value));
+            INSERT OR IGNORE INTO schema_migrations VALUES(3,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+            """;
+            publicSources.ExecuteNonQuery();
+        }
         SettingDefault("mode", "shadow"); SettingDefault("naming", "{Creator}/Singles/{Title} [{SourceId}].{ext}");
         SettingDefault("root", "/mnt/cephfs/media/asmr");
         SettingDefault("video.root", "/mnt/cephfs/media/asmr-video");
         SettingDefault("video.free_space_gib", "20");
         SettingDefault("video.concurrency", "1");
         SettingDefault("video.naming", "{Creator}/{Year}/{Date} - {Title} [{Provider}-{SourceId}].{ext}");
-        foreach (var (name, seconds) in new[] { ("discovery",86400), ("queue",300), ("video-queue",300), ("disk-scan",86400), ("plex",600), ("plex-video",600), ("playlists",86400), ("health",300), ("backup",86400) })
+        foreach (var (name, seconds) in new[] { ("discovery",86400), ("source-suggest",604800), ("queue",300), ("video-queue",300), ("disk-scan",86400), ("plex",600), ("plex-video",600), ("playlists",86400), ("health",300), ("backup",86400) })
             Execute("INSERT OR IGNORE INTO tasks(name,interval_seconds,next_run) VALUES($name,$seconds,$next)", ("name", name), ("seconds", seconds), ("next", DateTimeOffset.UtcNow.AddSeconds(name == "discovery" ? 60 : seconds).ToString("O")));
         InitializeFreshInstallation();
     }

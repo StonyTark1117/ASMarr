@@ -242,9 +242,13 @@ def _video_monitoring_enabled(db, creator_id):
 
 
 def _creator_config(db, cfg, creator_name):
-    row = db.execute('''SELECT p.settings FROM profiles p JOIN creators c ON c.profile_id=p.id
+    columns={column[1] for column in db.execute('PRAGMA table_info(creators)')}
+    follow="CASE WHEN c.follow_mode='explicit' AND c.follow_mode_review=0 THEN 'explicit' ELSE 'discovered' END" if 'follow_mode_review' in columns else ('c.follow_mode' if 'follow_mode' in columns else "'discovered'")
+    row = db.execute('SELECT p.settings,'+follow+''' AS follow_mode FROM profiles p JOIN creators c ON c.profile_id=p.id
                         WHERE c.name=?''', (creator_name,)).fetchone()
-    return acquisition_profiles.discovery_config(cfg, json.loads(row[0]) if row else {})
+    result=acquisition_profiles.discovery_config(cfg, json.loads(row[0]) if row else {})
+    if row and row['follow_mode']=='explicit':result['_explicit_follow']=True
+    return result
 
 
 def _reddit_video_duration(post):

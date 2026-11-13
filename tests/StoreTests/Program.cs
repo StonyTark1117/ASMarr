@@ -17,8 +17,10 @@ foreach(var invalid in new[]{"asmarr","/asmarr/","//host","/../escape","/x?query
 }
 Assert(store.Query("PRAGMA integrity_check")[0].Values.First()!.ToString()=="ok","migrations retain database integrity");
 Assert(store.Query("PRAGMA journal_mode")[0].Values.First()!.ToString()=="wal","database uses WAL");
-Assert(store.Query("SELECT * FROM schema_migrations").Count==2,"repeat migration is idempotent");
-Assert(store.Query("SELECT * FROM tasks").Count==9,"repeat migration does not duplicate tasks");
+Assert(store.Query("SELECT * FROM schema_migrations").Count==3,"repeat migration is idempotent");
+Assert(store.Query("SELECT * FROM tasks").Count==10,"repeat migration does not duplicate tasks");
+Assert(store.Query("SELECT * FROM source_catalog").Count==0&&store.Query("SELECT * FROM source_previews").Count==0&&store.Query("SELECT * FROM source_suggestions").Count==0,"public source catalog tables initialize empty");
+Assert(store.Query("SELECT interval_seconds FROM tasks WHERE name='source-suggest'")[0]["interval_seconds"]!.ToString()=="604800","source suggestions run weekly without linking sources");
 Assert(store.Query("SELECT * FROM video_quality_profiles").Count==6,"built-in video profiles are seeded once");
 Assert(store.Query("SELECT monitor_video FROM creators").Count==0,"migration does not invent creators or enable video");
 Assert(store.Setting("mode")=="shadow","first boot gates production writes");
@@ -84,6 +86,8 @@ Assert(CreatorRegistration.Link(store,999,new("reddit","Unowned")).Error is not 
 Assert(CreatorRegistration.Link(store,1,new("soundgasm","handle")).Error is not null,"linking cannot claim another creator identity");
 Assert(CreatorRegistration.Link(store,1,new("soundgasm",null!)).Error is not null,"null source handles are rejected safely");
 Assert(CreatorRegistration.Link(store,1,new("soundgasm","SecondHandle")).Id is not null,"existing creators can link additional source identities");
+Assert(CreatorRegistration.Link(store,1,new("rss","HTTPS://Feeds.Example.test/Creator.xml?Series=Quiet")).Id is not null,"public RSS identities accept normalized provider URLs");
+Assert(store.Query("SELECT handle FROM identities WHERE creator_id=1 AND kind='rss'")[0]["handle"]!.ToString()=="https://feeds.example.test/Creator.xml?Series=Quiet","public URL normalization preserves meaningful path and query case");
 store.Execute("UPDATE creators SET monitor_video=1 WHERE id=1");
 store.Execute("INSERT INTO backfill_jobs(id,creator_id,media_kind,state,cursor,started,updated) VALUES('resume-video',1,'Video','running','{\"phase\":\"known\",\"index\":2}',$now,$now)",("now",DateTimeOffset.UtcNow.ToString("O")));
 store.InterruptRunningVideoBackfills();

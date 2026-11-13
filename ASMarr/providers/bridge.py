@@ -18,6 +18,7 @@ import time
 import traceback
 import urllib.parse
 import xml.etree.ElementTree as ET
+import zipfile
 
 import requests
 import yaml
@@ -28,6 +29,7 @@ import acquisition_profiles
 import source_configuration
 import creator_removal
 import backup_snapshot
+import public_audio_sources
 from categories import CATEGORIES
 
 STATE = Path(os.environ.get('ASMARR_STATE', '/var/lib/asmarr'))
@@ -52,6 +54,10 @@ def setting(db, key, default=''):
 
 def has_table(db,name):
     return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(name,)).fetchone() is not None
+
+
+def has_column(db,table,name):
+    return any(row[1]==name for row in db.execute('PRAGMA table_info('+table+')'))
 
 
 def deployed_release_identity():
@@ -151,7 +157,7 @@ def migrate(db, cfg):
             path = str(Path(paths[0]).parent.parent if paths and Path(paths[0]).parent.name == 'Singles' else Path(paths[0]).parent) if paths else str(Path(cfg['output_root']) / core.safe_filename(name, 100))
             db.execute('INSERT OR IGNORE INTO creators(name,aliases,path) VALUES(?,?,?)', (name,json.dumps(aliases),path))
         names = {r['name']:r['id'] for r in db.execute('SELECT id,name FROM creators')}
-        def identity(name, kind, handle, profile=1, enabled=True):
+        def identity(name, kind, handle, profile=1, enabled=True, enrollment=None):
             canonical = cfg.get('creator_aliases', {}).get(name,name)
             if canonical not in names:
                 # Link migrated source accounts by actual targets/aliases.
@@ -161,15 +167,19 @@ def migrate(db, cfg):
                 db.execute('INSERT OR IGNORE INTO identities(creator_id,kind,handle,enabled) VALUES(?,?,?,?)', (names[canonical],kind,handle,int(enabled)))
                 if profile != 1:
                     db.execute('UPDATE creators SET profile_id=? WHERE id=?', (profile,names[canonical]))
+                if enrollment=='explicit':
+                    db.execute("UPDATE creators SET follow_mode='explicit',follow_mode_review=0 WHERE id=?",(names[canonical],))
+                elif enrollment=='discovered' and not db.execute("SELECT 1 FROM creators WHERE id=? AND follow_mode='explicit' AND follow_mode_review=0",(names[canonical],)).fetchone():
+                    db.execute("UPDATE creators SET follow_mode='discovered',follow_mode_review=0 WHERE id=?",(names[canonical],))
             elif not db.execute('SELECT id FROM identities WHERE creator_id IS NULL AND kind=? AND handle=?',(kind,handle)).fetchone():
                 db.execute('INSERT INTO identities(creator_id,kind,handle,enabled) VALUES(NULL,?,?,?)',(kind,handle,int(enabled)))
-        for name in cfg.get('allowlist',[]): identity(name,'reddit',name)
-        for name in cfg.get('soundgasm_creators',[]): identity(name,'soundgasm',name)
-        for c in cfg.get('youtube_channels',[]): identity(c['creator'],'youtube',c['channel_id'],2)
+        for name in cfg.get('allowlist',[]): identity(name,'reddit',name,enrollment='explicit')
+        for name in cfg.get('soundgasm_creators',[]): identity(name,'soundgasm',name,enrollment='explicit')
+        for c in cfg.get('youtube_channels',[]): identity(c['creator'],'youtube',c['channel_id'],2,enrollment='explicit')
         sfw = list(cfg.get('sfw_expansion',{}).get('creators',[])) + list(core.meta_get(db,'sfw_auto_creators',{}).values())
         for c in sfw:
-            identity(c['creator'],'reddit',c['reddit'],3)
-            identity(c['creator'],'soundgasm',c['soundgasm'],3)
+            identity(c['creator'],'reddit',c['reddit'],3,enrollment='discovered')
+            identity(c['creator'],'soundgasm',c['soundgasm'],3,enrollment='discovered')
         # Derive any linked Soundgasm identity absent from static configuration.
         for r in db.execute('SELECT DISTINCT creator,url FROM assets WHERE url LIKE ?',( 'https://soundgasm.net/u/%',)).fetchall():
             parts=urllib.parse.unquote(urllib.parse.urlparse(r['url']).path).split('/')
@@ -199,7 +209,8 @@ def migrate(db, cfg):
 
 def configured_discovery(db,cfg):
     cfg=json.loads(json.dumps(cfg))
-    identities=list(db.execute('SELECT i.*,c.name,c.profile_id FROM identities i JOIN creators c ON c.id=i.creator_id WHERE i.enabled=1 AND c.monitored=1'))
+    follow="CASE WHEN c.follow_mode='explicit' AND c.follow_mode_review=0 THEN 'explicit' ELSE 'discovered' END" if has_column(db,'creators','follow_mode_review') else ("c.follow_mode" if has_column(db,'creators','follow_mode') else "'explicit'")
+    identities=list(db.execute('SELECT i.*,c.name,c.profile_id,'+follow+' AS follow_mode FROM identities i JOIN creators c ON c.id=i.creator_id WHERE i.enabled=1 AND c.monitored=1'))
     paused_rows=db.execute('SELECT i.kind,i.handle FROM identities i LEFT JOIN creators c ON c.id=i.creator_id WHERE i.enabled=0 OR c.monitored=0').fetchall()
     paused_reddit={r['handle'].casefold() for r in paused_rows if r['kind']=='reddit'}
     paused_soundgasm={r['handle'].casefold() for r in paused_rows if r['kind']=='soundgasm'}
@@ -220,9 +231,435 @@ def configured_discovery(db,cfg):
         cfg[kind+'_creators']=list(dict.fromkeys(r['handle'] for r in identities if r['kind']==kind))
     cfg['creator_aliases'].update({r['handle']:r['name'] for r in identities if r['kind']=='reddit'})
     cfg['_identity_creators']={r['kind']+':'+r['handle'].casefold():r['name'] for r in identities}
+    cfg['_creator_follow_modes']={r['name']:r['follow_mode'] for r in identities}
+    cfg['_public_identities']=[dict(r) for r in identities if r['kind'] in public_audio_sources.KINDS]
     monitored={r['name'] for r in identities}
     cfg['sfw_expansion']['creators']=[c for c in cfg.get('sfw_expansion',{}).get('creators',[]) if c['creator'] in monitored]
     return cfg
+
+
+def _public_eligibility(db, creator, item):
+    review=',follow_mode_review' if has_column(db,'creators','follow_mode_review') else ',0 AS follow_mode_review'
+    row=db.execute('SELECT follow_mode,profile_id'+review+' FROM creators WHERE name=?',(creator,)).fetchone()
+    if not row:return False,'creator_missing'
+    settings=profile(db,{'creator':creator})
+    duration=item.get('duration')
+    if item.get('available') is False:return False,item.get('availabilityReason','recording_unavailable')
+    if 'freeDownload' in item and not item['freeDownload']:return False,'creator_free_download_not_enabled'
+    if item.get('promotional'):return False,'promotional_or_qa'
+    if duration is not None and float(duration)<float(settings.get('minimumDuration',0)):
+        return False,'below_minimum_duration'
+    if row['follow_mode']=='explicit' and not row['follow_mode_review']:return True,'accepted_followed_creator'
+    return core.title_passes(item.get('title',''),settings,trusted=True)
+
+
+def eligibility_repair_preview(db,args):
+    creator_id=int(args['creatorId'])
+    creator=db.execute('SELECT * FROM creators WHERE id=?',(creator_id,)).fetchone()
+    if not creator:raise ValueError('creator_not_found')
+    if creator['follow_mode']!='explicit' or creator['follow_mode_review']:
+        raise ValueError('explicit_follow_classification_required')
+    rows=db.execute('''SELECT a.key,a.title,a.published,a.source,
+          COALESCE((SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Audio'),a.state) AS audio_state,
+          (SELECT state FROM media_assets WHERE recording_key=a.key AND media_kind='Video') AS video_state
+        FROM assets a WHERE a.creator=? AND (a.state='suppressed' OR EXISTS(
+          SELECT 1 FROM media_assets m WHERE m.recording_key=a.key AND m.state='suppressed'))
+          AND NOT EXISTS(SELECT 1 FROM blocklist b WHERE b.recording_key=a.key)
+        ORDER BY COALESCE(a.published,0) DESC,a.key''',(creator['name'],)).fetchall()
+    items=[]
+    for row in rows:
+        eligible,reason=core.title_passes(row['title'],profile(db,{'creator':creator['name']}),trusted=True,explicitly_followed=True)
+        media=[]
+        if row['audio_state']=='suppressed':media.append('Audio')
+        if row['video_state']=='suppressed':media.append('Video')
+        items.append({'providerId':row['key'],'recordingKey':row['key'],'title':row['title'],'published':row['published'],
+                      'source':row['source'],'mediaKinds':media,'eligible':bool(eligible and media),
+                      'eligibilityReason':reason if media else 'no_suppressed_media','requiresMetadata':True})
+    now=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime());expires=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(time.time()+86400))
+    preview_id=hashlib.sha256((str(creator_id)+'\0repair\0'+str(time.time_ns())).encode()).hexdigest()[:32]
+    result={'items':items,'scope':'known recordings suppressed by prior filtering','complete':True}
+    with db:db.execute('''INSERT INTO source_previews(id,creator_id,kind,identity,state,complete,discovered,eligible,result,created,expires)
+                          VALUES(?,?,'eligibility_repair',?,'complete',1,?,?,?,?,?)''',
+                       (preview_id,creator_id,creator['name'],len(items),sum(i['eligible'] for i in items),json.dumps(result),now,expires))
+    return dict(result,previewId=preview_id,creatorId=creator_id,discovered=len(items),eligible=sum(i['eligible'] for i in items))
+
+
+def eligibility_repair_apply(db,args):
+    preview=db.execute("SELECT * FROM source_previews WHERE id=? AND kind='eligibility_repair'",(args['previewId'],)).fetchone()
+    if not preview:raise ValueError('repair_preview_not_found')
+    if preview['expires']<time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()):raise ValueError('repair_preview_expired')
+    creator=db.execute('SELECT * FROM creators WHERE id=?',(preview['creator_id'],)).fetchone()
+    if not creator or not creator['monitored'] or creator['follow_mode']!='explicit' or creator['follow_mode_review']:
+        raise ValueError('explicit_follow_authorization_changed')
+    selected=set(str(x) for x in args.get('recordingKeys',[]));all_items=bool(args.get('allEligible',False))
+    snapshot=json.loads(preview['result']);eligible={i['recordingKey']:i for i in snapshot['items'] if i.get('eligible')}
+    if not all_items and not selected:raise ValueError('select_recordings_or_all')
+    if not selected.issubset(eligible):raise ValueError('selection_not_in_reviewed_preview')
+    chosen=eligible.values() if all_items else (eligible[key] for key in selected)
+    restored={'Audio':0,'Video':0}
+    with db:
+        for item in chosen:
+            current=db.execute('SELECT creator FROM assets WHERE key=?',(item['recordingKey'],)).fetchone()
+            if not current or current['creator']!=creator['name']:continue
+            for media_kind in item['mediaKinds']:
+                changed=db.execute("UPDATE media_assets SET state='wanted',wanted=1,retry_after=0,error=NULL WHERE recording_key=? AND media_kind=? AND state='suppressed'",(item['recordingKey'],media_kind)).rowcount
+                restored[media_kind]+=changed
+                if media_kind=='Audio' and changed:db.execute("UPDATE assets SET state='pending',retry_after=0,error=NULL WHERE key=? AND state='suppressed'",(item['recordingKey'],))
+    return {'status':'complete','reviewedPreviewId':preview['id'],'selected':len(eligible) if all_items else len(selected),'restored':restored}
+
+
+def source_preview(db,cfg,args):
+    creator_id=int(args['creatorId'])
+    creator=db.execute('SELECT * FROM creators WHERE id=?',(creator_id,)).fetchone()
+    if not creator:raise ValueError('creator_not_found')
+    identity_row=None
+    if args.get('identityId'):
+        identity_row=db.execute('SELECT * FROM identities WHERE id=? AND creator_id=?',(int(args['identityId']),creator_id)).fetchone()
+        if not identity_row:raise ValueError('source_identity_not_found')
+        kind,identity=identity_row['kind'],identity_row['handle']
+    else:
+        kind=args['kind'];identity=public_audio_sources.normalize_identity(kind,args['identity'])
+        identity_row=db.execute('SELECT * FROM identities WHERE creator_id=? AND kind=? AND handle=?',(creator_id,kind,identity)).fetchone()
+    if kind not in public_audio_sources.KINDS:raise ValueError('source_preview_not_supported')
+    allowed=profile(db,{'creator':creator['name']}).get('allowedFormats',sorted(ALLOWED))
+    validator_key='rss_validators:'+hashlib.sha256(identity.encode()).hexdigest() if kind=='rss' else None
+    cursor=args.get('cursor');validators=core.meta_get(db,validator_key,{}) if validator_key and not cursor else None
+    result=public_audio_sources.catalog(public_audio_sources.SafeHTTP(core.HTTP()),kind,identity,allowed=allowed,limit=int(args.get('limit',5000)),validators=validators,cursor=cursor)
+    if result.get('notModified') and identity_row:
+        cached=[]
+        for row in db.execute('SELECT * FROM source_catalog WHERE identity_id=? ORDER BY published DESC LIMIT ?',(identity_row['id'],int(args.get('limit',5000)))):
+            item=json.loads(row['metadata']);item.update(providerId=row['provider_id'],title=row['title'],published=row['published'],duration=row['duration']);cached.append(item)
+        result['items']=cached;result['title']=identity
+    elif cursor and identity_row:
+        combined={str(item['providerId']):item for item in result['items']}
+        for row in db.execute('SELECT * FROM source_catalog WHERE identity_id=?',(identity_row['id'],)):
+            if str(row['provider_id']) in combined:continue
+            item=json.loads(row['metadata']);item.update(providerId=row['provider_id'],title=row['title'],published=row['published'],duration=row['duration']);combined[str(row['provider_id'])]=item
+        result['items']=list(combined.values())
+    for item in result['items']:
+        item['eligible'],item['eligibilityReason']=_public_eligibility(db,creator['name'],item)
+        item['requiresMetadata']=item.get('duration') is None
+        item['catalogId']=public_audio_sources.stable_id(kind,result['identity'],item['providerId'])
+    preview_id=hashlib.sha256((str(creator_id)+'\0'+kind+'\0'+result['identity']+'\0'+str(time.time_ns())).encode()).hexdigest()[:32]
+    now=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime());expires=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(time.time()+86400))
+    public_result={k:v for k,v in result.items() if k!='releases'}
+    with db:
+        if validator_key and result.get('validators') and result.get('complete'):core.meta_set(db,validator_key,result['validators'])
+        db.execute('''INSERT INTO source_previews(id,identity_id,creator_id,kind,identity,state,complete,discovered,eligible,result,created,expires)
+                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+                   (preview_id,identity_row['id'] if identity_row else None,creator_id,kind,result['identity'],'complete' if result['complete'] else 'partial',int(result['complete']),len(result['items']),sum(i['eligible'] for i in result['items']),json.dumps(public_result),now,expires))
+        if identity_row:
+            for item in result['items']:
+                metadata={k:v for k,v in item.items() if k not in {'catalogId','eligible','eligibilityReason'}}
+                db.execute('''INSERT INTO source_catalog(id,identity_id,provider_id,title,published,duration,eligible,eligibility_reason,metadata,discovered,updated)
+                              VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(identity_id,provider_id) DO UPDATE SET
+                              title=excluded.title,published=excluded.published,duration=excluded.duration,eligible=excluded.eligible,
+                              eligibility_reason=excluded.eligibility_reason,metadata=excluded.metadata,updated=excluded.updated''',
+                           (item['catalogId'],identity_row['id'],str(item['providerId']),item['title'],int(item.get('published') or 0),item.get('duration'),int(item['eligible']),item['eligibilityReason'],json.dumps(metadata),now,now))
+    return dict(public_result,previewId=preview_id,creatorId=creator_id,kind=kind,
+                discovered=len(result['items']),eligible=sum(i['eligible'] for i in result['items']))
+
+
+def _enqueue_catalog(db,catalog_id):
+    row=db.execute('''SELECT sc.*,i.kind,i.id AS source_identity_id,c.name AS creator
+                      FROM source_catalog sc JOIN identities i ON i.id=sc.identity_id
+                      JOIN creators c ON c.id=i.creator_id WHERE sc.id=?''',(catalog_id,)).fetchone()
+    if not row or not row['eligible']:return 'ineligible'
+    if row['recording_key']:
+        return 'known'
+    # The catalog id is derived from the normalized provider identity and
+    # provider recording id. Database row ids must never influence it.
+    key=row['id']
+    existing=db.execute('SELECT key FROM assets WHERE key=?',(key,)).fetchone()
+    if not existing:
+        db.execute('''INSERT INTO assets(key,url,targets,source,creator,title,published,state)
+                      VALUES(?,?,?,?,?,?,?,'pending')''',
+                   (key,key,json.dumps([[row['kind'],'catalog:'+row['id']]]),row['kind']+':'+str(row['source_identity_id']),row['creator'],row['title'],row['published']))
+        db.execute('INSERT OR IGNORE INTO aliases(id,asset_key) VALUES(?,?)',(row['kind']+':'+row['provider_id'],key))
+    db.execute('UPDATE source_catalog SET recording_key=? WHERE id=?',(key,row['id']))
+    return 'queued' if not existing else 'known'
+
+
+def audio_backfill(db,args):
+    preview=db.execute('SELECT * FROM source_previews WHERE id=?',(args['previewId'],)).fetchone()
+    if not preview:raise ValueError('source_preview_not_found')
+    if preview['state'] not in {'complete','partial'} or preview['expires']<time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()):raise ValueError('source_preview_expired')
+    if not preview['identity_id']:raise ValueError('link_source_before_backfill')
+    selected=set(str(x) for x in args.get('providerIds',[]));all_items=bool(args.get('allEligible',False))
+    if not all_items and not selected:raise ValueError('select_recordings_or_all')
+    if all_items and not preview['complete']:raise ValueError('catalog_scan_incomplete')
+    snapshot=json.loads(preview['result']);reviewed={str(item['providerId']) for item in snapshot.get('items',[]) if item.get('eligible')}
+    if not all_items and not selected.issubset(reviewed):raise ValueError('selection_not_in_reviewed_preview')
+    rows=db.execute('SELECT id,provider_id FROM source_catalog WHERE identity_id=? AND eligible=1 ORDER BY published DESC',(preview['identity_id'],)).fetchall()
+    rows=[r for r in rows if str(r['provider_id']) in reviewed and (all_items or str(r['provider_id']) in selected)]
+    job_id='audio:'+hashlib.sha256((preview['id']+'\0'+str(time.time_ns())).encode()).hexdigest()[:24]
+    now=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime());queued=known=0
+    with db:
+        db.execute('''INSERT INTO backfill_jobs(id,creator_id,media_kind,state,discovered,eligible,total,identity_id,preview_id,selected,selection,started,updated)
+                      VALUES(?,?,'Audio','running',?,?,?,?,?,?,?,?,?)''',
+                   (job_id,preview['creator_id'],preview['discovered'],preview['eligible'],len(rows),preview['identity_id'],preview['id'],len(rows),json.dumps([str(r['provider_id']) for r in rows]),now,now))
+        for row in rows:
+            status=_enqueue_catalog(db,row['id']);queued+=status=='queued';known+=status=='known'
+        db.execute("UPDATE backfill_jobs SET state='complete',finished=?,updated=? WHERE id=?",(now,now,job_id))
+    return {'status':'complete','jobId':job_id,'selected':len(rows),'queued':queued,'known':known}
+
+
+def discover_public(db,cfg,selected):
+    reports=[]
+    for identity in configured_discovery(db,cfg).get('_public_identities',[]):
+        if identity['kind'] not in selected:continue
+        name=identity['kind']+':'+str(identity['id']);before={r[0] for r in db.execute('SELECT provider_id FROM source_catalog WHERE identity_id=?',(identity['id'],))}
+        try:
+            result=source_preview(db,cfg,{'creatorId':identity['creator_id'],'identityId':identity['id']})
+            new=[i for i in result['items'] if str(i['providerId']) not in before]
+            queued=0
+            # The first successful scan establishes the reviewed baseline.
+            if before:
+                with db:
+                    for item in new:
+                        if item['eligible']:queued+=_enqueue_catalog(db,item['catalogId'])=='queued'
+            report={'name':name,'status':'healthy','parsed':result['discovered'],'accepted':result['eligible'],
+                    'items':{'new':len(new),'queued':queued,'baselineEstablished':not bool(before)},'previewId':result['previewId']}
+        except Exception as error:
+            report={'name':name,'status':getattr(error,'stage','unavailable'),'error':str(error),'parsed':0,'accepted':0,'items':{}}
+        reports.append(report)
+    now=int(time.time())
+    with db:
+        for report in reports:
+            previous=db.execute('SELECT last_success,last_download FROM sources WHERE name=?',(report['name'],)).fetchone()
+            last_success=now if report['status']=='healthy' else (previous['last_success'] if previous else None)
+            db.execute('INSERT OR REPLACE INTO sources VALUES(?,?,?,?,?,?)',(report['name'],report['status'],now,last_success,previous['last_download'] if previous else None,json.dumps(report)))
+    return reports
+
+
+def _download_response(http,url,path,max_bytes=2147483648):
+    # Buzzsprout's signed audio host requires an ordinary browser user agent.
+    # Other publishers can vary dynamic-ad bytes by user agent, so keep the
+    # provider client identity everywhere else.
+    host=(urllib.parse.urlparse(url).hostname or '').lower()
+    headers={'Accept-Encoding':'identity'}
+    if host.endswith('.buzzsprout.com') or host=='buzzsprout.com':
+        headers['User-Agent']='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36'
+    with http.get(url,stream=True,headers=headers) as response:
+        public_audio_sources.public_url(response.url)
+        size=0;expected=int(response.headers.get('Content-Length') or 0)
+        with path.open('wb') as output:
+            for chunk in response.iter_content(1024*1024):
+                size+=len(chunk)
+                if size>max_bytes:raise ValueError('download_limit_exceeded')
+                output.write(chunk)
+            output.flush();os.fsync(output.fileno())
+        content_type=response.headers.get('Content-Type','').split(';',1)[0]
+    if expected and size!=expected:raise ValueError('download_length_mismatch')
+    return {'bytes':size,'contentType':content_type,'url':url}
+
+
+def _update_audio_backfill_counts(db,identity_id):
+    for job in db.execute("SELECT id,selection FROM backfill_jobs WHERE identity_id=? AND media_kind='Audio'",(identity_id,)).fetchall():
+        selected=set(json.loads(job['selection'] or '[]'))
+        rows=db.execute('''SELECT sc.provider_id,sc.metadata,a.state FROM source_catalog sc LEFT JOIN assets a ON a.key=sc.recording_key
+                           WHERE sc.identity_id=?''',(identity_id,)).fetchall()
+        relevant=[r for r in rows if str(r['provider_id']) in selected]
+        downloaded=sum(bool(json.loads(r['metadata'] or '{}').get('transferSha256')) for r in relevant)
+        imported=sum(r['state']=='complete' for r in relevant)
+        db.execute('UPDATE backfill_jobs SET downloaded=?,imported=?,updated=? WHERE id=?',
+                   (downloaded,imported,time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),job['id']))
+
+
+def acquire_public(db,cfg,key):
+    production(db);core.require_mount(cfg)
+    row=db.execute('''SELECT a.*,sc.id AS catalog_id,sc.provider_id,sc.duration AS catalog_duration,sc.metadata,
+                      i.id AS identity_id,i.kind,i.handle,i.enabled,c.monitored,c.follow_mode
+                      FROM assets a JOIN source_catalog sc ON sc.recording_key=a.key
+                      JOIN identities i ON i.id=sc.identity_id JOIN creators c ON c.id=i.creator_id
+                      WHERE a.key=?''',(key,)).fetchone()
+    if not row:raise ValueError('public_recording_not_found')
+    if not row['enabled'] or not row['monitored']:raise ValueError('source_identity_not_approved')
+    if setting(db,'source.'+row['kind']+'.enabled','false')!='true':raise ValueError('source_disabled')
+    if creator_removal.excluded(db,row['creator'],[(row['kind'],row['handle'])]):raise ValueError('source_identity_not_approved')
+    settings=profile(db,row);allowed=set(settings.get('allowedFormats',sorted(ALLOWED)))
+    details=json.loads(row['metadata']);download_root=Path(cfg.get('download_root','/mnt/downloads/asmarr')).resolve();download_root.mkdir(parents=True,exist_ok=True)
+    current_item=dict(details,title=row['title'],duration=row['catalog_duration'])
+    eligible,reason=_public_eligibility(db,row['creator'],current_item)
+    if not eligible:
+        with db:
+            db.execute("UPDATE assets SET state='suppressed',error=? WHERE key=?",('Eligibility changed before acquisition: '+reason,key))
+            db.execute("UPDATE media_assets SET state='suppressed',wanted=0,error=? WHERE recording_key=? AND media_kind='Audio'",('Eligibility changed before acquisition: '+reason,key))
+            db.execute('UPDATE source_catalog SET eligible=0,eligibility_reason=?,updated=? WHERE id=?',(reason,time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),row['catalog_id']))
+        return {'status':'suppressed','reason':reason}
+    bandcamp_cache=None
+    with tempfile.TemporaryDirectory(prefix='asmarr-public-',dir=download_root) as work:
+        work=Path(work);transfer=work/'transfer'
+        expected_md5=None
+        if row['kind']=='rss':
+            url=public_audio_sources.rss_enclosure(public_audio_sources.SafeHTTP(core.HTTP()),row['handle'],row['provider_id'])
+        elif row['kind']=='internet_archive':
+            resolved=public_audio_sources.archive_download(public_audio_sources.SafeHTTP(core.HTTP()),row['handle'],row['provider_id'],allowed)
+            url=resolved['url'];expected_md5=resolved.get('expectedMd5');details.update(resolved)
+        else:
+            url=public_audio_sources.bandcamp_download(public_audio_sources.SafeHTTP(core.HTTP()),details['releaseUrl'],allowed)
+        fallback_used=False
+        if row['kind']=='bandcamp':
+            cache_dir=download_root/'.bandcamp-cache';cache_dir.mkdir(mode=0o700,exist_ok=True)
+            for stale in list(cache_dir.glob('*.zip'))+list(cache_dir.glob('*.partial')):
+                if time.time()-stale.stat().st_mtime>86400:stale.unlink(missing_ok=True)
+            cache_key=hashlib.sha256((str(details.get('releaseId'))+'\0'+','.join(sorted(allowed))).encode()).hexdigest()
+            bandcamp_cache=cache_dir/(cache_key+'.zip')
+            if bandcamp_cache.is_file():
+                public_audio_sources.safe_zip_members(bandcamp_cache,max_bytes=int(cfg.get('max_file_bytes',2147483648))*2)
+                transfer=bandcamp_cache;transfer_result={'bytes':transfer.stat().st_size,'contentType':'application/zip','url':'cached-release-archive'}
+            else:
+                partial=cache_dir/(cache_key+'.partial')
+                try:
+                    transfer_result=_download_response(public_audio_sources.SafeHTTP(core.HTTP()),url,partial,int(cfg.get('max_file_bytes',2147483648)))
+                    public_audio_sources.safe_zip_members(partial,max_bytes=int(cfg.get('max_file_bytes',2147483648))*2)
+                    os.replace(partial,bandcamp_cache);transfer=bandcamp_cache
+                except Exception:
+                    partial.unlink(missing_ok=True);raise
+        else:
+            try:transfer_result=_download_response(public_audio_sources.SafeHTTP(core.HTTP()),url,transfer,int(cfg.get('max_file_bytes',2147483648)))
+            except (core.SourceError,requests.RequestException,public_audio_sources.PublicSourceError):
+                fallback=public_audio_sources.libsyn_fallback(url) if row['kind']=='rss' else None
+                if not fallback:raise
+                fallback_used=True;details['libsynOriginalEnclosure']=url
+                transfer_result=_download_response(public_audio_sources.SafeHTTP(core.HTTP()),fallback,transfer,int(cfg.get('max_file_bytes',2147483648)))
+        transfer_hash=digest(transfer)
+        if expected_md5:
+            md5=hashlib.md5(usedforsecurity=False)
+            with transfer.open('rb') as source:
+                for chunk in iter(lambda:source.read(1024*1024),b''):md5.update(chunk)
+            if md5.hexdigest().lower()!=expected_md5.lower():raise ValueError('published_checksum_mismatch')
+        if row['kind']=='bandcamp':
+            members=public_audio_sources.safe_zip_members(transfer,max_bytes=int(cfg.get('max_file_bytes',2147483648))*2)
+            member=public_audio_sources.match_bandcamp_member(members,row['title'],details.get('trackNumber'))
+            ext=Path(member.filename).suffix.lower();media=work/('track'+ext)
+            with zipfile.ZipFile(transfer) as archive,archive.open(member) as source,media.open('wb') as output:shutil.copyfileobj(source,output)
+        else:
+            ext=details.get('extension') or {'audio/mpeg':'.mp3','audio/mp4':'.m4a','audio/aac':'.aac','audio/ogg':'.opus','audio/flac':'.flac','audio/wav':'.wav'}.get(transfer_result['contentType']) or Path(urllib.parse.urlparse(url).path).suffix.lower()
+            if ext not in ALLOWED:raise ValueError('unsupported_media_format')
+            media=work/('recording'+ext);os.replace(transfer,media)
+        if ext not in allowed:raise ValueError('profile_format_rejected')
+        info=core.validate_audio(media)
+        if core.real_video_streams(info):raise ValueError('output_contains_video')
+        actual=float(info['format']['duration']);expected=float(row['catalog_duration'] or 0);warnings=[]
+        if expected and expected-actual>max(10,expected*.02):
+            review=dict(details,transferSha256=transfer_hash,deliveredBytes=transfer_result['bytes'],deliveredDuration=actual,
+                        catalogDuration=expected,reviewReason='delivered_duration_shorter_than_catalog')
+            with db:
+                db.execute("UPDATE assets SET state='review',error=? WHERE key=?",('Delivered duration is materially shorter than the refreshed catalog duration',key))
+                db.execute("UPDATE media_assets SET state='review',wanted=0,error=? WHERE recording_key=? AND media_kind='Audio'",('Delivered duration is materially shorter than the refreshed catalog duration',key))
+                db.execute("UPDATE source_catalog SET eligible=0,eligibility_reason='duration_discrepancy_review',metadata=?,updated=? WHERE id=?",(json.dumps(review),time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),row['catalog_id']))
+                _update_audio_backfill_counts(db,row['identity_id'])
+            return {'status':'review_hold','reason':'delivered_duration_shorter_than_catalog','catalogDuration':expected,
+                    'deliveredDuration':actual,'transferSha256':transfer_hash}
+        if expected and actual-expected>max(10,expected*.02):warnings.append('delivered_duration_longer_than_catalog')
+        core.fully_decode_audio(media);core.tag_audio(media,row['creator'],row['title'],row['published']);core.validate_audio(media);core.fully_decode_audio(media)
+        result=import_audio(db,cfg,key,str(media),provider=row['kind'])
+        final_hash=digest(Path(result['path']))
+    audit=dict(details,transferSha256=transfer_hash,finalSha256=final_hash,deliveredBytes=transfer_result['bytes'],deliveredDuration=actual,warnings=warnings,fallbackUsed=fallback_used)
+    with db:
+        db.execute('UPDATE source_catalog SET metadata=?,updated=? WHERE id=?',(json.dumps(audit),time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),row['catalog_id']))
+        _update_audio_backfill_counts(db,row['identity_id'])
+    if bandcamp_cache and not db.execute('''SELECT 1 FROM source_catalog sc JOIN assets a ON a.key=sc.recording_key
+          WHERE sc.identity_id=? AND json_extract(sc.metadata,'$.releaseId')=? AND a.state IN ('pending','failed','missing') LIMIT 1''',
+          (row['identity_id'],str(details.get('releaseId')))).fetchone():bandcamp_cache.unlink(missing_ok=True)
+    return dict(result,transferSha256=transfer_hash,finalSha256=final_hash,warnings=warnings)
+
+
+def verify_public_download(db,cfg,kind,identity,provider_id=None):
+    creator=db.execute('''SELECT c.name,c.profile_id FROM identities i JOIN creators c ON c.id=i.creator_id
+                          WHERE i.kind=? AND i.handle=? AND i.enabled=1''',(kind,identity)).fetchone()
+    if not creator:raise ValueError('source_identity_not_approved')
+    allowed=profile(db,{'creator':creator['name']}).get('allowedFormats',sorted(ALLOWED))
+    result=public_audio_sources.catalog(public_audio_sources.SafeHTTP(core.HTTP()),kind,identity,allowed=allowed,limit=5000 if provider_id else 10)
+    item=next((x for x in result['items'] if (provider_id is None or str(x['providerId'])==str(provider_id)) and _public_eligibility(db,creator['name'],x)[0]),None)
+    if not item:return {'status':'empty','kind':kind,'stage':'eligibility'}
+    root=Path(tempfile.mkdtemp(prefix='asmarr-source-test-',dir=STATE/'logs'))
+    try:
+        transfer=root/'transfer';expected_md5=None
+        if kind=='rss':url=public_audio_sources.rss_enclosure(public_audio_sources.SafeHTTP(core.HTTP()),identity,item['providerId'])
+        elif kind=='internet_archive':
+            resolved=public_audio_sources.archive_download(public_audio_sources.SafeHTTP(core.HTTP()),identity,item['providerId'],allowed);url=resolved['url'];expected_md5=resolved.get('expectedMd5')
+        else:url=public_audio_sources.bandcamp_download(public_audio_sources.SafeHTTP(core.HTTP()),item['releaseUrl'],allowed)
+        fallback_used=False
+        try:transfer_result=_download_response(public_audio_sources.SafeHTTP(core.HTTP()),url,transfer,int(cfg.get('max_file_bytes',2147483648)))
+        except (core.SourceError,requests.RequestException,public_audio_sources.PublicSourceError):
+            fallback=public_audio_sources.libsyn_fallback(url) if kind=='rss' else None
+            if not fallback:raise
+            fallback_used=True
+            transfer_result=_download_response(public_audio_sources.SafeHTTP(core.HTTP()),fallback,transfer,int(cfg.get('max_file_bytes',2147483648)))
+        if expected_md5:
+            checksum=hashlib.md5(usedforsecurity=False)
+            with transfer.open('rb') as source:
+                for chunk in iter(lambda:source.read(1024*1024),b''):checksum.update(chunk)
+            if checksum.hexdigest().lower()!=expected_md5.lower():raise ValueError('published_checksum_mismatch')
+        media=transfer;archive_tracks_validated=None
+        if kind=='bandcamp':
+            members=public_audio_sources.safe_zip_members(transfer);member=public_audio_sources.match_bandcamp_member(members,item['title'],item.get('trackNumber'))
+            extracted={};archive_tracks_validated=0
+            with zipfile.ZipFile(transfer) as archive:
+                for index,candidate in enumerate(members):
+                    target=root/('track-'+str(index)+Path(candidate.filename).suffix.lower())
+                    with archive.open(candidate) as source,target.open('wb') as output:shutil.copyfileobj(source,output)
+                    track_info=core.validate_audio(target)
+                    if core.real_video_streams(track_info):raise ValueError('output_contains_video')
+                    core.fully_decode_audio(target);archive_tracks_validated+=1;extracted[candidate.filename]=target
+            media=extracted[member.filename]
+        info=core.validate_audio(media)
+        if core.real_video_streams(info):raise ValueError('output_contains_video')
+        core.fully_decode_audio(media)
+        return {'status':'healthy','kind':kind,'stage':'transfer','downloadVerified':True,
+                'bytes':transfer_result['bytes'],'duration':float(info['format']['duration']),
+                'sha256':digest(media),'providerId':item['providerId'],'fallbackUsed':fallback_used,
+                'archiveTracksValidated':archive_tracks_validated}
+    finally:shutil.rmtree(root,ignore_errors=True)
+
+
+def source_suggestions(db,args):
+    creator_id=args.get('creatorId')
+    creators=db.execute('''SELECT * FROM creators WHERE monitored=1 AND follow_mode='explicit' AND follow_mode_review=0
+                           AND (? IS NULL OR id=?) ORDER BY id LIMIT 100''',(creator_id,creator_id)).fetchall()
+    now=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime());created=0;errors=[];cached=0
+    def save(creator,kind,identity,title,evidence,score):
+        nonlocal created
+        try:identity=public_audio_sources.normalize_identity(kind,identity)
+        except (ValueError,TypeError):return
+        if db.execute('SELECT 1 FROM identities WHERE kind=? AND handle=?',(kind,identity)).fetchone():return
+        if creator_removal.excluded(db,creator['name'],[(kind,identity)]):return
+        sid=hashlib.sha256((str(creator['id'])+'\0'+kind+'\0'+identity).encode()).hexdigest()[:32]
+        db.execute('''INSERT INTO source_suggestions(id,creator_id,kind,identity,title,evidence,score,state,created,updated)
+                      VALUES(?,?,?,?,?,?,?,'pending',?,?) ON CONFLICT(creator_id,kind,identity) DO UPDATE SET
+                      title=excluded.title,evidence=excluded.evidence,score=excluded.score,updated=excluded.updated,
+                      state=CASE WHEN source_suggestions.state='dismissed' THEN 'dismissed' ELSE 'pending' END''',
+                   (sid,creator['id'],kind,identity,title,json.dumps(evidence),score,now,now));created+=1
+    for creator in creators:
+        last=core.meta_get(db,'source_suggestion_scan:'+str(creator['id']),0)
+        if not args.get('refresh') and time.time()-float(last or 0)<7*86400:
+            cached+=1;continue
+        aliases=json.loads(creator['aliases'] or '[]');terms=[creator['name'],*aliases[:3]]
+        try:
+            response=requests.get('https://itunes.apple.com/search',params={'term':creator['name'],'media':'podcast','entity':'podcast','limit':10,'country':'US'},timeout=(10,30));response.raise_for_status()
+            for item in response.json().get('results',[]):
+                feed=item.get('feedUrl');candidate=item.get('collectionName') or ''
+                if not feed:continue
+                exact=normalize(candidate)==normalize(creator['name']) or normalize(item.get('artistName',''))==normalize(creator['name'])
+                save(creator,'rss',feed,candidate,{'directory':'Apple Podcasts','artist':item.get('artistName'),'page':item.get('collectionViewUrl'),'exactName':exact},.9 if exact else .55)
+        except (requests.RequestException,ValueError,KeyError) as error:errors.append({'creatorId':creator['id'],'kind':'rss','error':type(error).__name__})
+        try:
+            response=requests.get('https://archive.org/advancedsearch.php',params={'q':'mediatype:audio AND creator:"'+creator['name'].replace('"','')+'"','fl[]':['identifier','title','creator'],'rows':10,'page':1,'output':'json'},timeout=(10,30));response.raise_for_status()
+            for item in response.json().get('response',{}).get('docs',[]):
+                identifier=item.get('identifier');
+                if identifier:save(creator,'internet_archive',identifier,item.get('title') or identifier,{'directory':'Internet Archive','creator':item.get('creator'),'exactCreator':normalize(str(item.get('creator','')))==normalize(creator['name'])},.85)
+        except (requests.RequestException,ValueError,KeyError) as error:errors.append({'creatorId':creator['id'],'kind':'internet_archive','error':type(error).__name__})
+        try:
+            response=requests.get('https://bandcamp.com/search',params={'q':creator['name'],'item_type':'b'},timeout=(10,30));response.raise_for_status()
+            if 'Client Challenge' in response.text:raise ValueError('verification_challenge')
+            links=list(dict.fromkeys(re.findall(r'https://[A-Za-z0-9-]+\.bandcamp\.com(?:/(?:album|track)/[^\"\'<> ]+)?',response.text)))[:10]
+            for link in links:save(creator,'bandcamp',link,urllib.parse.urlparse(link).hostname.split('.')[0],{'directory':'Bandcamp','query':creator['name']},.5)
+        except (requests.RequestException,ValueError) as error:errors.append({'creatorId':creator['id'],'kind':'bandcamp','error':str(error) if isinstance(error,ValueError) else type(error).__name__})
+        core.meta_set(db,'source_suggestion_scan:'+str(creator['id']),time.time())
+    db.commit()
+    return {'status':'complete' if not errors else 'partial','creators':len(creators),'cachedCreators':cached,'suggestionsUpdated':created,'errors':errors}
 
 
 def discover(db,cfg,secrets,kind='all',shadow=True):
@@ -253,8 +690,8 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
         working.commit();reference.commit();snapshot.close()
     before={r['key'] for r in working.execute('SELECT key FROM assets')}
     baseline_meta=dict(working.execute('SELECT key,value FROM meta'))
-    selected=['reddit','soundgasm','youtube','sfw','whyp','audiochan','hotaudio'] if kind=='all' else [kind]
-    selected=[k for k in selected if setting(db,'source.'+k+'.enabled','false' if k=='hotaudio' else 'true')=='true']
+    selected=['reddit','soundgasm','youtube','sfw','whyp','audiochan','hotaudio',*sorted(public_audio_sources.KINDS)] if kind=='all' else [kind]
+    selected=[k for k in selected if setting(db,'source.'+k+'.enabled','false' if k=='hotaudio' or k in public_audio_sources.KINDS else 'true')=='true']
     active=configured_discovery(db,cfg)
     def profile_rules(creator):
         name=active.get('creator_aliases',{}).get(creator,creator)
@@ -296,7 +733,7 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
             qualified=next((c for c in automatic.values() if c['creator']==creator),None)
             if conn.execute('SELECT id FROM creators WHERE name=?',(creator,)).fetchone():return 'creator_unmonitored'
             if creator not in configured and not qualified:return 'creator_unmonitored'
-            conn.execute('INSERT INTO creators(name,path,profile_id) VALUES(?,?,?)',(creator,str(Path(cfg['output_root'])/core.safe_filename(creator,100)),3 if qualified else 1))
+            conn.execute('INSERT INTO creators(name,path,profile_id,follow_mode) VALUES(?,?,?,?)',(creator,str(Path(cfg['output_root'])/core.safe_filename(creator,100)),3 if qualified else 1,'discovered' if qualified else 'explicit'))
             creator_id=conn.execute('SELECT id FROM creators WHERE name=?',(creator,)).fetchone()[0]
             if qualified:
                 for k,h in [('reddit',qualified['reddit']),('soundgasm',qualified['soundgasm'])]:conn.execute('INSERT OR IGNORE INTO identities(creator_id,kind,handle) VALUES(?,?,?)',(creator_id,k,h))
@@ -315,6 +752,8 @@ def discover(db,cfg,secrets,kind='all',shadow=True):
     core.enqueue=monitored_enqueue
     try:
         reports=core.discover(working,active,secrets,capture,selected,inspect=shadow)
+        if not shadow and any(k in public_audio_sources.KINDS for k in selected):
+            reports.extend(discover_public(working,active,selected))
     finally:
         core.enqueue=original_enqueue;core.youtube.listing=original_listing;core.targets=original_targets
     playlists=plex_playlists.sync(working,cfg,secrets,core,dry_run=True) if shadow else {'status':'scheduled'}
@@ -467,6 +906,8 @@ def acquire(db,cfg,key):
     row=db.execute('SELECT a.* FROM assets a JOIN creators c ON c.name=a.creator WHERE a.key=? AND c.monitored=1',(key,)).fetchone()
     if not row: raise ValueError('recording_missing_or_unmonitored')
     source_kind,_,source_handle=row['source'].partition(':')
+    if source_kind in public_audio_sources.KINDS:
+        return acquire_public(db,cfg,key)
     if source_kind in CREATOR_AUDIO_KINDS:
         if setting(db,'source.'+source_kind+'.enabled','false' if source_kind=='hotaudio' else 'true')!='true':
             raise ValueError('source_disabled')
@@ -495,6 +936,13 @@ def acquire(db,cfg,key):
                 ORDER BY i.id''',(row['creator'],)):
             if not creator_removal.excluded(db,identity['name'],[('youtube',identity['handle'])]):
                 effective['youtube_channels'].append({'creator':identity['name'],'channel_id':identity['handle']})
+    if has_column(db,'creators','follow_mode_review'):
+        follow=db.execute('SELECT follow_mode,follow_mode_review FROM creators WHERE name=?',(row['creator'],)).fetchone()
+    elif has_column(db,'creators','follow_mode'):
+        follow=db.execute('SELECT follow_mode,0 AS follow_mode_review FROM creators WHERE name=?',(row['creator'],)).fetchone()
+    else:follow=None
+    if follow and follow['follow_mode']=='explicit' and not follow['follow_mode_review']:
+        rules=dict(rules,_explicit_follow=True)
     priorities=rules.get('sourcePriorities',['soundgasm','youtube','reddit'])
     targets=[]
     for target in json.loads(row['targets']):
@@ -639,7 +1087,7 @@ def import_audio(db,cfg,key,path,*,provider='qbittorrent'):
     settings=profile(db,asset)
     if source.suffix.lower() not in settings.get('allowedFormats',sorted(ALLOWED)):raise ValueError('profile_format_rejected')
     info=core.validate_audio(source)
-    if any(s.get('codec_type')=='video' for s in info.get('streams',[])):raise ValueError('import_contains_video')
+    if core.real_video_streams(info):raise ValueError('import_contains_video')
     if float(info['format']['duration'])<settings.get('minimumDuration',0):raise ValueError('profile_duration_rejected')
     destination=naming(db,asset,source.suffix.lower());destination.parent.mkdir(parents=True,exist_ok=True)
     expected=digest(source)
@@ -820,6 +1268,13 @@ def dispatch(operation,args):
             return {'files':len(manifest['files']),'missing':manifest['missing'],'outside':manifest['outside'],'unchanged':all(manifest['files'].get(k)==v for k,v in original['files'].items()),
                     'video':video_media.scan_library(db,cfg)}
         if operation=='discover': return discover(db,cfg,secrets,args.get('kind','all'),args.get('shadow',True))
+        if operation=='source-preview':return source_preview(db,cfg,args)
+        if operation=='eligibility-repair-preview':return eligibility_repair_preview(db,args)
+        if operation=='eligibility-repair-apply':
+            production(db);return eligibility_repair_apply(db,args)
+        if operation=='audio-backfill':
+            production(db);return audio_backfill(db,args)
+        if operation=='source-suggest':return source_suggestions(db,args)
         if operation=='metadata':
             row=db.execute('SELECT * FROM assets WHERE key=?',(args['key'],)).fetchone()
             return dict(row) if row else {'status':'not_found'}
@@ -862,13 +1317,26 @@ def dispatch(operation,args):
                 handles=configured_discovery(db,cfg).get(kind+'_creators',[])
                 if not handles:return {'status':'empty','kind':kind}
                 core.creator_audio_sources.profile_listing(core.HTTP(),kind,handles[0])
+            elif kind in public_audio_sources.KINDS:
+                identity=db.execute('''SELECT i.handle,i.creator_id FROM identities i JOIN creators c ON c.id=i.creator_id
+                                       WHERE i.kind=? AND i.enabled=1 AND c.monitored=1 ORDER BY i.id LIMIT 1''',(kind,)).fetchone()
+                if not identity:return {'status':'empty','kind':kind,'stage':'discovery'}
+                result=source_preview(db,cfg,{'creatorId':identity['creator_id'],'kind':kind,'identity':identity['handle'],'limit':1})
+                mode=args.get('mode','discovery')
+                if mode=='download':
+                    return verify_public_download(db,cfg,kind,identity['handle'],args.get('providerId'))
+                return {'status':'healthy','kind':kind,'stage':'discovery','items':result['discovered']}
             else: raise ValueError('unknown_source')
-            return {'status':'healthy','kind':kind}
+            return {'status':'healthy','kind':kind,'stage':'discovery'}
         if operation=='playlists':
             preview=args.get('preview',True)
             if not preview: production(db)
             return plex_playlists.sync(db,cfg,secrets,core,dry_run=preview)
-        if operation=='plex': production(db); return {'status':core.plex_refresh(db,cfg,secrets,core.HTTP())}
+        if operation=='plex':
+            production(db);status=core.plex_refresh(db,cfg,secrets,core.HTTP())
+            if status=='indexed':
+                with db:db.execute("UPDATE backfill_jobs SET plex_indexed=imported,updated=? WHERE media_kind='Audio'",(time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),))
+            return {'status':status}
         if operation=='plex-video': production(db); return video_media.plex_refresh(db,cfg,secrets)
         if operation=='plex-video-validate-binding':
             # Validate the proposed section against the effective configuration

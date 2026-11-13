@@ -88,6 +88,11 @@ public sealed class Worker(Store store,ProviderProcess providers,IHubContext<Sta
             {
                 "migration" => await providers.Run("migrate",new {},timeout.Token),
                 "discovery" => await providers.Run("discover",new {shadow,kind=args.RootElement.TryGetProperty("kind",out var k)?k.GetString():"all"},timeout.Token),
+                "source-suggest" => await providers.Run("source-suggest",args.RootElement,timeout.Token),
+                "source-preview" => await providers.Run("source-preview",args.RootElement,timeout.Token),
+                "eligibility-repair-preview" => await providers.Run("eligibility-repair-preview",args.RootElement,timeout.Token),
+                "eligibility-repair-apply" => await providers.Run("eligibility-repair-apply",args.RootElement,timeout.Token),
+                "audio-backfill" => await providers.Run("audio-backfill",args.RootElement,timeout.Token),
                 "video-backfill" => await RunVideoBackfill(args.RootElement,id,timeout.Token),
                 "disk-scan" => await providers.Run("scan",new {},timeout.Token),
                 "plex-verify" => await providers.Run("plex-verify",new {},timeout.Token),

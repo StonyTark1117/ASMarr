@@ -32,6 +32,7 @@ import plex_playlists
 import acquisition_profiles
 import creator_audio_sources
 import hotaudio_capture
+import public_audio_sources
 
 UA = 'linux:asmr-scraper:1.0 (personal media library)'
 F4_RE = re.compile(r'\[\s*F4[FMA]+\s*\]', re.I)
@@ -64,12 +65,16 @@ class TextParser(HTMLParser):
 
 def plain(text):
     p = TextParser()
-    p.feed(text or '')
+    p.feed(text or '');p.close()
     return html.unescape(' '.join(p.parts))
 
 
-def title_passes(title, cfg, trusted=False, topic_pattern=None):
+def title_passes(title, cfg, trusted=False, topic_pattern=None, explicitly_followed=False):
     text = plain(title)
+    if public_audio_sources.PROMOTIONAL.search(text):
+        return False, 'promotional_or_qa'
+    if explicitly_followed or cfg.get('_explicit_follow'):
+        return True, 'accepted_followed_creator'
     custom_speaker = acquisition_profiles.speaker_decision(text, cfg, trusted)
     if custom_speaker is not None:
         if not custom_speaker[0]: return custom_speaker
@@ -240,7 +245,7 @@ def validate_audio(path):
     if not path.is_file() or path.stat().st_size == 0:
         raise MediaError('empty_or_missing_media')
     process = subprocess.Popen(['ffprobe', '-v', 'error', '-show_entries',
-                        'format=duration:stream=codec_type', '-of', 'json', str(path)],
+                        'format=duration,format_name:stream=codec_type,codec_name:stream_disposition=attached_pic', '-of', 'json', str(path)],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         stdout, _ = process.communicate(timeout=30)
@@ -256,6 +261,21 @@ def validate_audio(path):
     if float(data.get('format', {}).get('duration', 0)) <= 0:
         raise MediaError('invalid_duration')
     return data
+
+
+def real_video_streams(data):
+    return [stream for stream in data.get('streams', [])
+            if stream.get('codec_type') == 'video'
+            and not stream.get('disposition', {}).get('attached_pic')]
+
+
+def fully_decode_audio(path, timeout=1800):
+    process = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(path),
+                              '-map', '0:a:0', '-f', 'null', '-'],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True, timeout=timeout)
+    if process.returncode:
+        raise MediaError('audio_decode_failed')
 
 
 def reconcile(db, root, apply=False):
@@ -439,7 +459,9 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
                trusted=False, topic_pattern=None):
         creator = cfg.get('_identity_creators', {}).get(report['name'].split(':')[0]+':'+creator.casefold(), cfg.get('creator_aliases', {}).get(creator, creator))
         rules = cfg.get('_profile_rules', lambda creator: cfg)(creator)
-        ok, reason = title_passes(haystack or title, rules, trusted, topic_pattern)
+        followed = cfg.get('_creator_follow_modes', {}).get(creator) == 'explicit'
+        ok, reason = title_passes(haystack or title, rules, trusted, topic_pattern,
+                                  explicitly_followed=followed)
         if not ok:
             report['rejected'][reason] += 1
             return
@@ -544,6 +566,8 @@ def discover(db, cfg, secrets, http, selected, inspect=False):
             try:
                 rules = cfg.get('_profile_rules', lambda creator: cfg)(channel['creator'])
                 rules = acquisition_profiles.discovery_config(cfg, rules)
+                if cfg.get('_creator_follow_modes', {}).get(channel['creator']) == 'explicit':
+                    rules['_explicit_follow'] = True
                 checkpoint_key = 'youtube_seen:' + channel['channel_id']
                 previous = meta_get(db, checkpoint_key)
                 entries = youtube.listing(channel, cfg)
@@ -770,12 +794,12 @@ def save_asset(asset, cfg, http):
             if expected_capture_duration is not None and abs(
                     float(validation['format']['duration']) - expected_capture_duration) > 1:
                 raise MediaError('hotaudio_capture_incomplete')
-            if any(s.get('codec_type') == 'video' for s in validation.get('streams', [])):
+            if real_video_streams(validation):
                 raise MediaError('output_contains_video')
             if float(validation['format']['duration']) < cfg.get('minimum_duration', 0):
                 raise MediaError('profile_duration_rejected')
             tag_audio(tmp, asset['creator'], asset['title'], asset['published'])
-            validate_audio(tmp)
+            validate_audio(tmp);fully_decode_audio(tmp)
             os.chmod(tmp, 0o644)
             os.replace(tmp, out)
             return out, url

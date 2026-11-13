@@ -15,6 +15,9 @@ FIELDS = {
     'whyp': {},
     'audiochan': {},
     'hotaudio': {},
+    'rss': {},
+    'internet_archive': {},
+    'bandcamp': {},
 }
 
 
@@ -71,7 +74,10 @@ def snapshot(db, base, kind):
     latest = dict(zip(['created', 'finished', 'state', 'result'], test)) if test else None
     if latest and latest['result']:
         result = json.loads(latest['result'])
-        latest['result'] = {key: result[key] for key in ('status', 'kind') if key in result}
+        latest['result'] = {key: result[key] for key in
+                            ('status', 'kind', 'stage', 'items', 'downloadVerified',
+                             'bytes', 'duration', 'sha256', 'providerId', 'warnings')
+                            if key in result}
     return {'kind': kind, 'configuration': configuration, 'checkpoints': checkpoints,
             'checkpointPolicy': 'Discovery cursors' if prefix else 'No cursor; profile inventory is re-enumerated',
             'rateLimits': {'minimumHttpIntervalSeconds': effective.get('request_interval', 1.1), 'maximumHttpAttempts': 3,

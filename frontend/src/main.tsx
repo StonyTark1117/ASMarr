@@ -139,6 +139,7 @@ function App() {
     [addingCreator, setAddingCreator] = useState(false),
     [removingCreator, setRemovingCreator] = useState<number | null>(null),
     [removingCreators, setRemovingCreators] = useState<number[] | null>(null),
+    [catalogSelection, setCatalogSelection] = useState<Record<string, string[]>>({}),
     [integration, setIntegration] = useState("prowlarr");
   const activePage = useRef("Dashboard");
   const creatorRequest = useRef(0);
@@ -846,6 +847,21 @@ function App() {
                 <div className="section-heading">
                   <h2>Linked identities</h2>
                   <div className="monitor-controls">
+                    <Badge value={creator.creator.follow_mode === "explicit" ? "explicit follow" : "discovered"} />
+                    {!!creator.creator.follow_mode_review && <Badge value="follow mode needs review" />}
+                    {!!creator.creator.follow_mode_review && <>
+                      <button onClick={async () => { await act("creators/" + creator.creator.id, "PUT", { monitored: !!creator.creator.monitored, profileId: creator.creator.profile_id, tags: JSON.parse(creator.creator.tags || "[]"), monitorVideo: !!creator.creator.monitor_video, videoQualityProfileId: creator.creator.video_quality_profile_id, followMode: "explicit" }); await openCreator(creator.creator); }}>Confirm explicitly followed</button>
+                      <button onClick={async () => { await act("creators/" + creator.creator.id, "PUT", { monitored: !!creator.creator.monitored, profileId: creator.creator.profile_id, tags: JSON.parse(creator.creator.tags || "[]"), monitorVideo: !!creator.creator.monitor_video, videoQualityProfileId: creator.creator.video_quality_profile_id, followMode: "discovered" }); await openCreator(creator.creator); }}>Mark automatically discovered</button>
+                    </>}
+                    <button onClick={async () => { await command("source-suggest", { creatorId: creator.creator.id }); }}>
+                      <Search size={15} /> Find public sources
+                    </button>
+                    {creator.creator.follow_mode === "explicit" && !creator.creator.follow_mode_review && (
+                      <button onClick={async () => {
+                        await command("eligibility-repair-preview", { creatorId: creator.creator.id });
+                        notify("Repair preview queued; suppressed recordings will remain unchanged until reviewed");
+                      }}>Review previously filtered</button>
+                    )}
                     <button className="danger-outline" onClick={() => setRemovingCreator(creator.creator.id)}>
                       <Trash2 size={15} /> Remove creator…
                     </button>
@@ -915,6 +931,12 @@ function App() {
                     <Radio size={17} />
                     <b>{i.kind}</b>
                     <span>{i.handle}</span>
+                    {["rss", "internet_archive", "bandcamp"].includes(i.kind) && (
+                      <button onClick={async () => {
+                        await command("source-preview", { creatorId: creator.creator.id, identityId: i.id });
+                        notify("Catalog preview queued; no recordings will download until selected");
+                      }}>Preview catalog</button>
+                    )}
                     <label>
                       <input
                         type="checkbox"
@@ -961,16 +983,67 @@ function App() {
                     <option>whyp</option>
                     <option>audiochan</option>
                     <option>hotaudio</option>
+                    <option>rss</option>
+                    <option>internet_archive</option>
+                    <option>bandcamp</option>
                   </select>
                   <input
                     name="handle"
-                    placeholder="Account or channel ID"
+                    placeholder="Account, channel, feed, item, or artist URL"
                     required
                   />
                   <button>
                     <Plus size={15} /> Link identity
                   </button>
                 </form>
+                {!!creator.suggestions?.length && (
+                  <div className="backfill-progress">
+                    <b>Suggested public sources</b>
+                    {creator.suggestions.map((s: Row) => (
+                      <div className="source-row" key={s.id}>
+                        <Badge value={s.kind} /><span>{s.title || s.identity}</span>
+                        <small>{Math.round(Number(s.score) * 100)}% match</small>
+                        <button onClick={async () => { await act("source-suggestions/" + s.id, "PUT", { action: "approve" }); await openCreator(creator.creator); }}>Approve and preview</button>
+                        <button onClick={async () => { await act("source-suggestions/" + s.id, "PUT", { action: "dismiss" }); await openCreator(creator.creator); }}>Dismiss</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!!creator.previews?.length && (
+                  <div className="backfill-progress">
+                    <b>Catalog previews</b>
+                    {creator.previews.map((p: Row) => { const previewItems = JSON.parse(p.result || "{}").items || []; const selected = catalogSelection[p.id] || []; return (
+                      <div className="source-row" key={p.id}>
+                        <Badge value={p.kind} />
+                        <span>{p.discovered} found · {p.eligible} eligible · {p.complete ? "complete page scan" : "partial scan"}</span>
+                        {!p.complete && p.identity_id && <button onClick={async () => {
+                          await command("source-preview", { creatorId: creator.creator.id, identityId: p.identity_id, cursor: JSON.parse(p.result || "{}").nextCursor });
+                          notify("Catalog continuation queued");
+                        }}>Resume scan</button>}
+                        {previewItems.filter((item: Row) => item.eligible).map((item: Row) => <label key={item.providerId}>
+                          <input type="checkbox" checked={selected.includes(String(item.providerId))} onChange={(e) => setCatalogSelection({...catalogSelection,
+                            [p.id]: e.target.checked ? [...selected, String(item.providerId)] : selected.filter((id) => id !== String(item.providerId))})} /> {item.title}
+                        </label>)}
+                        {p.kind === "eligibility_repair" && <button disabled={!p.eligible} onClick={async () => {
+                          await act("source-previews/" + p.id + "/eligibility-repair", "POST", { allEligible: true, recordingKeys: [] });
+                          await openCreator(creator.creator);
+                        }}>Restore all reviewed</button>}
+                        {p.kind === "eligibility_repair" && <button disabled={!selected.length} onClick={async () => {
+                          await act("source-previews/" + p.id + "/eligibility-repair", "POST", { allEligible: false, recordingKeys: selected });
+                          await openCreator(creator.creator);
+                        }}>Restore selected</button>}
+                        {p.identity_id && p.kind !== "eligibility_repair" && p.complete && <button disabled={!p.eligible} onClick={async () => {
+                          await act("source-previews/" + p.id + "/backfill", "POST", { allEligible: true, providerIds: [] });
+                          await openCreator(creator.creator);
+                        }}>Queue all eligible</button>}
+                        {p.identity_id && p.kind !== "eligibility_repair" && <button disabled={!selected.length} onClick={async () => {
+                          await act("source-previews/" + p.id + "/backfill", "POST", { allEligible: false, providerIds: selected });
+                          await openCreator(creator.creator);
+                        }}>Queue selected</button>}
+                      </div>
+                    )})}
+                  </div>
+                )}
                 <p className="muted">
                   Library path: <code>{creator.creator.path}</code>
                 </p>
@@ -1181,6 +1254,9 @@ function App() {
                         <option>whyp</option>
                         <option>audiochan</option>
                         <option>hotaudio</option>
+                        <option>rss</option>
+                        <option>internet_archive</option>
+                        <option>bandcamp</option>
                       </select>
                     </label>
                     <label>
@@ -1746,13 +1822,12 @@ function App() {
                         >
                           Configure {c.kind}
                         </button>
-                        <button
-                          onClick={() =>
-                            command("source-test", { kind: c.kind })
-                          }
-                        >
-                          Test
+                        <button onClick={() => command("source-test", { kind: c.kind, mode: "discovery" })}>
+                          Check listing
                         </button>
+                        {["rss", "internet_archive", "bandcamp"].includes(c.kind) && <button onClick={() => command("source-test", { kind: c.kind, mode: "download" })}>
+                          Verify download
+                        </button>}
                         <button
                           onClick={() => command("discovery", { kind: c.kind })}
                         >
@@ -1865,6 +1940,7 @@ function App() {
                 <>
                   <section className="panel">
                     <h2>Create acquisition profile</h2>
+                    <p className="muted">Topic, hypnosis, speaker, audience, and fantasy rules apply while finding unfollowed creators. Explicit follows bypass those discovery-content rules; minimum duration, Q&amp;A and promotional exclusions, formats, permissions, and storage limits still apply.</p>
                     <form
                       onSubmit={async (e) => {
                         e.preventDefault();
@@ -1891,7 +1967,7 @@ function App() {
                         <input name="name" required maxLength={100} />
                       </label>
                       <label>
-                        New profile rules
+                        Unfollowed discovery and acquisition rules
                         <textarea
                           name="settings"
                           rows={6}
@@ -1913,6 +1989,9 @@ function App() {
                                 "whyp",
                                 "audiochan",
                                 "hotaudio",
+                                "rss",
+                                "internet_archive",
+                                "bandcamp",
                               ],
                               directRetries: 3,
                               backlogLimit: 3,
@@ -1950,7 +2029,7 @@ function App() {
                             <input name="name" defaultValue={p.name} />
                           </label>
                           <label>
-                            Acquisition rules
+                            Unfollowed discovery and acquisition rules
                             <textarea
                               name="settings"
                               rows={14}
